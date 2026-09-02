@@ -19,6 +19,27 @@ import {
 } from './routing.js'
 import { describeWriteError, writeBlockedReason } from './vm.js'
 
+/** Resolve the switcher-style A/B choice to fader 0's device value. */
+export function mixerTransitionTarget(input: string, current: number): number {
+	if (input === 'a') return 0
+	if (input === 'b') return 1
+	// Mid-transition, toggle heads away from the nearest end.
+	return current < 0.5 ? 1 : 0
+}
+
+/** Apply an absolute value or signed adjustment, keeping the device write inside its range. */
+export function adjustedTarget(
+	operation: string,
+	value: number,
+	current: number | null,
+	minimum: number,
+	maximum: number,
+): number | null {
+	if (operation === 'adjust' && current === null) return null
+	const target = operation === 'adjust' ? current! + value : value
+	return Math.min(maximum, Math.max(minimum, target))
+}
+
 /**
  * Action definitions depend on which BNCs exist and which of them are reversible, so this is
  * rebuilt after every discovery rather than once at init.
@@ -34,8 +55,427 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 		...[...self.rtp.videoReceivers.values()].map((r) => ({ id: `v_${r.index}`, label: r.name })),
 		...[...self.rtp.audioReceivers.values()].map((r) => ({ id: `a_${r.index}`, label: r.name })),
 	]
+	const mixerChoices = self.processors.videoMixerChoices()
+	const firstMixer = mixerChoices[0]?.id ?? 0
 
 	self.setActionDefinitions({
+		video_mixer_mode: {
+			name: 'Video Mixer - Set Mode',
+			options: [
+				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
+				{
+					id: 'mode',
+					type: 'dropdown',
+					label: 'Mode',
+					default: 'MIXER',
+					choices: [
+						{ id: 'MIXER', label: 'Mixer' },
+						{ id: 'MIXER_INDEPENDENT', label: 'Mixer - Independent' },
+						{ id: 'LUMA_KEYER', label: 'Luma Keyer' },
+						{ id: 'LUMA_KEYER_ADDITIVE', label: 'Luma Keyer - Additive' },
+					],
+				},
+			],
+			callback: async (event) => {
+				const vm = self.connection.vm
+				const index = Number(event.options.mixer)
+				if (!vm?.video_mixer || !self.processors.videoMixers.has(index)) {
+					self.log('warn', `Cannot set mixer mode: mixer ${index} is not available`)
+					return
+				}
+				const blocked = writeBlockedReason(self.config.towel, vm)
+				if (blocked) return self.log('warn', `Cannot set mixer mode: ${blocked}`)
+				try {
+					await vm.video_mixer.instances.row(index).mode.write(String(event.options.mode) as VAPI.VideoMixer.BSLKMode)
+				} catch (e: any) {
+					self.log('error', `Failed to set mixer ${index} mode: ${describeWriteError(e)}`)
+				}
+			},
+		},
+
+		video_mixer_fader: {
+			name: 'Video Mixer - Transition',
+			description: 'Cut or fade to A or B, or toggle to the other input. Applies to fader 0 in Mixer mode.',
+			options: [
+				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
+				{
+					id: 'input',
+					type: 'dropdown',
+					label: 'Input',
+					default: 'toggle',
+					choices: [
+						{ id: 'toggle', label: 'Toggle A / B' },
+						{ id: 'a', label: 'A' },
+						{ id: 'b', label: 'B' },
+					],
+				},
+				{
+					id: 'style',
+					type: 'dropdown',
+					label: 'Transition',
+					default: 'cut',
+					choices: [
+						{ id: 'cut', label: 'Cut' },
+						{ id: 'fade', label: 'Fade' },
+					],
+				},
+				{
+					id: 'duration',
+					type: 'number',
+					label: 'Fade Duration (ms)',
+					default: 1000,
+					min: 1,
+					max: 600000,
+					step: 1,
+					isVisible: (options) => options.style === 'fade',
+				},
+			],
+			callback: async (event) => {
+				const vm = self.connection.vm
+				const index = Number(event.options.mixer)
+				const live = self.processors.videoMixers.get(index)
+				if (!vm?.video_mixer || !live) {
+					self.log('warn', `Cannot transition mixer: mixer ${index} is not available`)
+					return
+				}
+				const blocked = writeBlockedReason(self.config.towel, vm)
+				if (blocked) return self.log('warn', `Cannot transition mixer: ${blocked}`)
+				const requested = String(event.options.input)
+				if (requested === 'toggle' && live.fader0 === null) {
+					self.log('warn', `Cannot toggle mixer ${index}: its current fader position is not known`)
+					return
+				}
+				const target = mixerTransitionTarget(requested, live.fader0 ?? 0)
+				const duration = event.options.style === 'fade' ? Number(event.options.duration) : 0
+				try {
+					await vm.video_mixer.instances.row(index).mixer.fader0.transition.write({
+						target,
+						time: new VScript.Duration(duration, 'ms'),
+					})
+				} catch (e: any) {
+					self.log('error', `Failed to transition mixer ${index}: ${describeWriteError(e)}`)
+				}
+			},
+		},
+
+		video_mixer_fader_level: {
+			name: 'Video Mixer - Fader Level (Advanced)',
+			description: 'Set or adjust either fader, including fader 1 in Independent Mixer mode.',
+			options: [
+				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
+				{
+					id: 'fader',
+					type: 'dropdown',
+					label: 'Fader',
+					default: 0,
+					choices: [
+						{ id: 0, label: 'Fader 0' },
+						{ id: 1, label: 'Fader 1' },
+					],
+				},
+				{
+					id: 'operation',
+					type: 'dropdown',
+					label: 'Operation',
+					default: 'set',
+					choices: [
+						{ id: 'set', label: 'Set' },
+						{ id: 'adjust', label: 'Adjust' },
+					],
+				},
+				{
+					id: 'value',
+					type: 'number',
+					label: 'Level (%)',
+					default: 100,
+					min: 0,
+					max: 100,
+					step: 0.1,
+					isVisible: (options) => options.operation === 'set',
+				},
+				{
+					id: 'adjustment',
+					type: 'number',
+					label: 'Adjustment (% points)',
+					default: 5,
+					min: -100,
+					max: 100,
+					step: 0.1,
+					isVisible: (options) => options.operation === 'adjust',
+				},
+				{
+					id: 'duration',
+					type: 'number',
+					label: 'Full Transition Duration (ms)',
+					tooltip: 'Use 0 for an immediate move.',
+					default: 0,
+					min: 0,
+					max: 600000,
+					step: 1,
+				},
+			],
+			callback: async (event) => {
+				const vm = self.connection.vm
+				const index = Number(event.options.mixer)
+				const live = self.processors.videoMixers.get(index)
+				if (!vm?.video_mixer || !live) {
+					self.log('warn', `Cannot set mixer fader: mixer ${index} is not available`)
+					return
+				}
+				const blocked = writeBlockedReason(self.config.towel, vm)
+				if (blocked) return self.log('warn', `Cannot set mixer fader: ${blocked}`)
+				const fader = Number(event.options.fader)
+				const operation = String(event.options.operation)
+				const amount = Number(operation === 'adjust' ? event.options.adjustment : event.options.value) / 100
+				const target = adjustedTarget(operation, amount, fader === 1 ? live.fader1 : live.fader0, 0, 1)
+				if (target === null) {
+					self.log('warn', `Cannot adjust mixer ${index} fader ${fader}: its current level is not known`)
+					return
+				}
+				try {
+					const row = vm.video_mixer.instances.row(index)
+					await (fader === 1 ? row.mixer.fader1 : row.mixer.fader0).transition.write({
+						target,
+						time: new VScript.Duration(Number(event.options.duration), 'ms'),
+					})
+				} catch (e: any) {
+					self.log('error', `Failed to set mixer ${index} fader ${fader}: ${describeWriteError(e)}`)
+				}
+			},
+		},
+
+		video_mixer_luma_clip: {
+			name: 'Video Mixer - Luma Key Clip',
+			options: [
+				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
+				{
+					id: 'operation',
+					type: 'dropdown',
+					label: 'Operation',
+					default: 'set',
+					choices: [
+						{ id: 'set', label: 'Set' },
+						{ id: 'adjust', label: 'Adjust' },
+					],
+				},
+				{
+					id: 'value',
+					type: 'number',
+					label: 'Clip',
+					default: 0,
+					min: -0.07,
+					max: 1.07,
+					step: 0.001,
+					isVisible: (options) => options.operation === 'set',
+				},
+				{
+					id: 'adjustment',
+					type: 'number',
+					label: 'Adjustment',
+					default: 0.01,
+					min: -1.14,
+					max: 1.14,
+					step: 0.001,
+					isVisible: (options) => options.operation === 'adjust',
+				},
+			],
+			callback: async (event) => {
+				const vm = self.connection.vm
+				const index = Number(event.options.mixer)
+				const live = self.processors.videoMixers.get(index)
+				if (!vm?.video_mixer || !live) {
+					self.log('warn', `Cannot set luma key clip: mixer ${index} is not available`)
+					return
+				}
+				const blocked = writeBlockedReason(self.config.towel, vm)
+				if (blocked) return self.log('warn', `Cannot set luma key clip: ${blocked}`)
+				const operation = String(event.options.operation)
+				const amount = Number(operation === 'adjust' ? event.options.adjustment : event.options.value)
+				const target = adjustedTarget(operation, amount, live.clip, -0.07, 1.07)
+				if (target === null) {
+					self.log('warn', `Cannot adjust mixer ${index} luma key clip: its current value is not known`)
+					return
+				}
+				try {
+					await vm.video_mixer.instances.row(index).luma_keyer.clip.write(target)
+				} catch (e: any) {
+					self.log('error', `Failed to set mixer ${index} luma key clip: ${describeWriteError(e)}`)
+				}
+			},
+		},
+
+		video_mixer_luma_gain: {
+			name: 'Video Mixer - Luma Key Gain',
+			options: [
+				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
+				{
+					id: 'operation',
+					type: 'dropdown',
+					label: 'Operation',
+					default: 'set',
+					choices: [
+						{ id: 'set', label: 'Set' },
+						{ id: 'adjust', label: 'Adjust' },
+					],
+				},
+				{
+					id: 'value',
+					type: 'number',
+					label: 'Gain',
+					default: 1,
+					min: 0.001,
+					max: 1.131,
+					step: 0.001,
+					isVisible: (options) => options.operation === 'set',
+				},
+				{
+					id: 'adjustment',
+					type: 'number',
+					label: 'Adjustment',
+					default: 0.01,
+					min: -1.13,
+					max: 1.13,
+					step: 0.001,
+					isVisible: (options) => options.operation === 'adjust',
+				},
+			],
+			callback: async (event) => {
+				const vm = self.connection.vm
+				const index = Number(event.options.mixer)
+				const live = self.processors.videoMixers.get(index)
+				if (!vm?.video_mixer || !live) {
+					self.log('warn', `Cannot set luma key gain: mixer ${index} is not available`)
+					return
+				}
+				const blocked = writeBlockedReason(self.config.towel, vm)
+				if (blocked) return self.log('warn', `Cannot set luma key gain: ${blocked}`)
+				const operation = String(event.options.operation)
+				const amount = Number(operation === 'adjust' ? event.options.adjustment : event.options.value)
+				const target = adjustedTarget(operation, amount, live.gain, 0.001, 1.131)
+				if (target === null) {
+					self.log('warn', `Cannot adjust mixer ${index} luma key gain: its current value is not known`)
+					return
+				}
+				try {
+					await vm.video_mixer.instances.row(index).luma_keyer.gain.write(target)
+				} catch (e: any) {
+					self.log('error', `Failed to set mixer ${index} luma key gain: ${describeWriteError(e)}`)
+				}
+			},
+		},
+
+		video_mixer_key_opacity: {
+			name: 'Video Mixer - Key Opacity',
+			options: [
+				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
+				{
+					id: 'operation',
+					type: 'dropdown',
+					label: 'Operation',
+					default: 'set',
+					choices: [
+						{ id: 'set', label: 'Set' },
+						{ id: 'adjust', label: 'Adjust' },
+					],
+				},
+				{
+					id: 'value',
+					type: 'number',
+					label: 'Opacity (%)',
+					default: 100,
+					min: 0,
+					max: 100,
+					step: 0.1,
+					isVisible: (options) => options.operation === 'set',
+				},
+				{
+					id: 'adjustment',
+					type: 'number',
+					label: 'Adjustment (% points)',
+					default: 5,
+					min: -100,
+					max: 100,
+					step: 0.1,
+					isVisible: (options) => options.operation === 'adjust',
+				},
+				{
+					id: 'duration',
+					type: 'number',
+					label: 'Full Transition Duration (ms)',
+					default: 0,
+					min: 0,
+					max: 600000,
+					step: 1,
+				},
+			],
+			callback: async (event) => {
+				const vm = self.connection.vm
+				const index = Number(event.options.mixer)
+				const live = self.processors.videoMixers.get(index)
+				if (!vm?.video_mixer || !live) {
+					self.log('warn', `Cannot set key opacity: mixer ${index} is not available`)
+					return
+				}
+				const blocked = writeBlockedReason(self.config.towel, vm)
+				if (blocked) return self.log('warn', `Cannot set key opacity: ${blocked}`)
+				const operation = String(event.options.operation)
+				const amount = Number(operation === 'adjust' ? event.options.adjustment : event.options.value) / 100
+				const target = adjustedTarget(operation, amount, live.opacity, 0, 1)
+				if (target === null) {
+					self.log('warn', `Cannot adjust mixer ${index} key opacity: its current value is not known`)
+					return
+				}
+				try {
+					await vm.video_mixer.instances.row(index).luma_keyer.opacity.transition.write({
+						target,
+						time: new VScript.Duration(Number(event.options.duration), 'ms'),
+					})
+				} catch (e: any) {
+					self.log('error', `Failed to set mixer ${index} key opacity: ${describeWriteError(e)}`)
+				}
+			},
+		},
+
+		video_mixer_key_invert: {
+			name: 'Video Mixer - Set Key Invert',
+			options: [
+				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
+				{
+					id: 'invert',
+					type: 'dropdown',
+					label: 'Invert',
+					default: 'toggle',
+					choices: [
+						{ id: 'on', label: 'On' },
+						{ id: 'off', label: 'Off' },
+						{ id: 'toggle', label: 'Toggle' },
+					],
+				},
+			],
+			callback: async (event) => {
+				const vm = self.connection.vm
+				const index = Number(event.options.mixer)
+				const live = self.processors.videoMixers.get(index)
+				if (!vm?.video_mixer || !live) {
+					self.log('warn', `Cannot invert key: mixer ${index} is not available`)
+					return
+				}
+				const blocked = writeBlockedReason(self.config.towel, vm)
+				if (blocked) return self.log('warn', `Cannot invert key: ${blocked}`)
+				const requested = String(event.options.invert)
+				if (requested === 'toggle' && live.invert === null) {
+					self.log('warn', `Cannot toggle mixer ${index} key invert: its current state is not known`)
+					return
+				}
+				const target = requested === 'toggle' ? !live.invert : requested === 'on'
+				try {
+					await vm.video_mixer.instances.row(index).luma_keyer.invert.write(target)
+				} catch (e: any) {
+					self.log('error', `Failed to set mixer ${index} key invert: ${describeWriteError(e)}`)
+				}
+			},
+		},
+
 		/**
 		 * Self-contained crosspoint change, as the router spec requires: one call routes one source
 		 * to one destination, with no select-then-take workflow and no dependence on prior state.

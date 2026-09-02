@@ -37,8 +37,150 @@ export function UpdateFeedbacks(self: ModuleInstance, registry: FlowRegistry): v
 
 	const flowSources = sourceChoices(registry)
 	const flowDestinations = destinationChoices(registry)
+	const mixerChoices = self.processors.videoMixerChoices()
+	const firstMixer = mixerChoices[0]?.id ?? 0
+	const near = (actual: number | null, wanted: number): boolean => actual !== null && Math.abs(actual - wanted) <= 0.005
 
 	self.setFeedbackDefinitions({
+		video_mixer_mode: {
+			name: 'Video Mixer - Mode Selected',
+			type: 'boolean',
+			defaultStyle: { bgcolor: GREEN, color: WHITE },
+			options: [
+				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
+				{
+					id: 'mode',
+					type: 'dropdown',
+					label: 'Mode',
+					default: 'MIXER',
+					choices: [
+						{ id: 'MIXER', label: 'Mixer' },
+						{ id: 'MIXER_INDEPENDENT', label: 'Mixer - Independent' },
+						{ id: 'LUMA_KEYER', label: 'Luma Keyer' },
+						{ id: 'LUMA_KEYER_ADDITIVE', label: 'Luma Keyer - Additive' },
+					],
+				},
+			],
+			callback: (feedback) =>
+				self.processors.videoMixers.get(Number(feedback.options.mixer))?.mode === feedback.options.mode,
+		},
+
+		video_mixer_fader: {
+			name: 'Video Mixer - Fader At Value',
+			type: 'boolean',
+			defaultStyle: { bgcolor: GREEN, color: WHITE },
+			options: [
+				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
+				{
+					id: 'fader',
+					type: 'dropdown',
+					label: 'Fader',
+					default: 0,
+					choices: [
+						{ id: 0, label: 'Fader 0' },
+						{ id: 1, label: 'Fader 1' },
+					],
+				},
+				{ id: 'value', type: 'number', label: 'Value (%)', default: 100, min: 0, max: 100, step: 0.1 },
+			],
+			callback: (feedback) => {
+				const mixer = self.processors.videoMixers.get(Number(feedback.options.mixer))
+				const actual = Number(feedback.options.fader) === 1 ? mixer?.fader1 : mixer?.fader0
+				return near(actual ?? null, Number(feedback.options.value) / 100)
+			},
+		},
+
+		video_mixer_input: {
+			name: 'Video Mixer - Input Selected',
+			description: 'True at an end stop in Mixer mode. Fader 0 at 0% selects A; 100% selects B.',
+			type: 'boolean',
+			defaultStyle: { bgcolor: GREEN, color: WHITE },
+			options: [
+				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
+				{
+					id: 'input',
+					type: 'dropdown',
+					label: 'Input',
+					default: 'a',
+					choices: [
+						{ id: 'a', label: 'A' },
+						{ id: 'b', label: 'B' },
+					],
+				},
+			],
+			callback: (feedback) => {
+				const mixer = self.processors.videoMixers.get(Number(feedback.options.mixer))
+				if (mixer?.mode !== 'MIXER') return false
+				return near(mixer.fader0, feedback.options.input === 'a' ? 0 : 1)
+			},
+		},
+
+		video_mixer_luma_value: {
+			name: 'Video Mixer - Luma Key Clip / Gain At Value',
+			type: 'boolean',
+			defaultStyle: { bgcolor: GREEN, color: WHITE },
+			options: [
+				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
+				{
+					id: 'parameter',
+					type: 'dropdown',
+					label: 'Parameter',
+					default: 'clip',
+					choices: [
+						{ id: 'clip', label: 'Clip' },
+						{ id: 'gain', label: 'Gain' },
+					],
+				},
+				{
+					id: 'value',
+					type: 'number',
+					label: 'Value',
+					tooltip: 'Clip range: -0.07–1.07. Gain range: 0.001–1.131.',
+					default: 0,
+					min: -0.07,
+					max: 1.131,
+					step: 0.001,
+				},
+			],
+			callback: (feedback) => {
+				const mixer = self.processors.videoMixers.get(Number(feedback.options.mixer))
+				const actual = feedback.options.parameter === 'gain' ? mixer?.gain : mixer?.clip
+				return actual !== null && actual !== undefined && Math.abs(actual - Number(feedback.options.value)) <= 0.0005
+			},
+		},
+
+		video_mixer_key_opacity: {
+			name: 'Video Mixer - Key Opacity At Value',
+			type: 'boolean',
+			defaultStyle: { bgcolor: GREEN, color: WHITE },
+			options: [
+				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
+				{ id: 'value', type: 'number', label: 'Value (%)', default: 100, min: 0, max: 100, step: 0.1 },
+			],
+			callback: (feedback) =>
+				near(
+					self.processors.videoMixers.get(Number(feedback.options.mixer))?.opacity ?? null,
+					Number(feedback.options.value) / 100,
+				),
+		},
+
+		video_mixer_key_visible: {
+			name: 'Video Mixer - Key Visible',
+			description: 'True while luma-key opacity is above 0%.',
+			type: 'boolean',
+			defaultStyle: { bgcolor: GREEN, color: WHITE },
+			options: [{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices }],
+			callback: (feedback) => (self.processors.videoMixers.get(Number(feedback.options.mixer))?.opacity ?? 0) > 0.005,
+		},
+
+		video_mixer_key_inverted: {
+			name: 'Video Mixer - Key Inverted',
+			type: 'boolean',
+			defaultStyle: { bgcolor: AMBER, color: BLACK },
+			options: [{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices }],
+			callback: (feedback) => self.processors.videoMixers.get(Number(feedback.options.mixer))?.invert === true,
+		},
+
 		/** Router tally: is this exact source currently on this destination? */
 		identify: {
 			name: 'System - Identify Active',

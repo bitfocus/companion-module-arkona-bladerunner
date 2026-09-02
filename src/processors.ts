@@ -52,6 +52,18 @@ export interface ProcessorOutput {
 	path: string
 }
 
+/** Live values needed by mixer actions and synchronous Companion feedback callbacks. */
+export interface VideoMixerState {
+	index: number
+	mode: VAPI.VideoMixer.BSLKMode | null
+	fader0: number | null
+	fader1: number | null
+	clip: number | null
+	gain: number | null
+	opacity: number | null
+	invert: boolean | null
+}
+
 export class ProcessorState {
 	readonly inputs = new Map<string, ProcessorInput>()
 	readonly outputs = new Map<string, ProcessorOutput>()
@@ -59,6 +71,14 @@ export class ProcessorState {
 	readonly outputsByPath = new Map<string, ProcessorOutput>()
 	/** The current name of each node, which every label on it is built from. */
 	readonly nodeNames = new Map<string, string>()
+	readonly videoMixers = new Map<number, VideoMixerState>()
+
+	videoMixerChoices(): Array<{ id: number; label: string }> {
+		return [...this.videoMixers.values()].map((m) => ({
+			id: m.index,
+			label: this.nodeNames.get(mixerNode(m.index)) ?? `Mixer ${m.index}`,
+		}))
+	}
 
 	addOutput(output: ProcessorOutput): void {
 		this.outputs.set(output.id, output)
@@ -75,6 +95,7 @@ export class ProcessorState {
 		this.outputs.clear()
 		this.outputsByPath.clear()
 		this.nodeNames.clear()
+		this.videoMixers.clear()
 	}
 }
 
@@ -325,12 +346,95 @@ export async function subscribeProcessors(self: ModuleInstance, vm: VAPI.AT1130.
 			for (const i of await mixer.instances.allocated_indices()) {
 				const row = mixer.instances.row(i)
 				const node = mixerNode(i)
+				const live: VideoMixerState = {
+					index: i,
+					mode: null,
+					fader0: null,
+					fader1: null,
+					clip: null,
+					gain: null,
+					opacity: null,
+					invert: null,
+				}
+				state.videoMixers.set(i, live)
 				nameNode(node, `Mixer ${i}`, row)
 				nodeIssues(node, row.issues)
 				addInput(`${node}_a`, ' A', node, 'video', demand(row.v_src0))
 				addInput(`${node}_b`, ' B', node, 'video', demand(row.v_src1))
 				addInput(`${node}_key`, ' Key', node, 'video', demand(row.luma_keyer.v_src))
 				addOutput(`${node}_out`, ' Output', node, 'video', `video_mixer.instances[${i}].output`)
+				pending.push(
+					watchKeyword(
+						self,
+						`${node}.mode`,
+						row.mode,
+						(v) => {
+							live.mode = v
+							self.checkFeedbacks('video_mixer_mode')
+						},
+						collect,
+					),
+					watchKeyword(
+						self,
+						`${node}.fader0`,
+						row.mixer.fader0.current,
+						(v) => {
+							live.fader0 = Number(v)
+							self.checkFeedbacks('video_mixer_fader', 'video_mixer_input')
+						},
+						collect,
+					),
+					watchKeyword(
+						self,
+						`${node}.fader1`,
+						row.mixer.fader1.current,
+						(v) => {
+							live.fader1 = Number(v)
+							self.checkFeedbacks('video_mixer_fader')
+						},
+						collect,
+					),
+					watchKeyword(
+						self,
+						`${node}.clip`,
+						row.luma_keyer.clip,
+						(v) => {
+							live.clip = Number(v)
+							self.checkFeedbacks('video_mixer_luma_value')
+						},
+						collect,
+					),
+					watchKeyword(
+						self,
+						`${node}.gain`,
+						row.luma_keyer.gain,
+						(v) => {
+							live.gain = Number(v)
+							self.checkFeedbacks('video_mixer_luma_value')
+						},
+						collect,
+					),
+					watchKeyword(
+						self,
+						`${node}.opacity`,
+						row.luma_keyer.opacity.current,
+						(v) => {
+							live.opacity = Number(v)
+							self.checkFeedbacks('video_mixer_key_opacity', 'video_mixer_key_visible')
+						},
+						collect,
+					),
+					watchKeyword(
+						self,
+						`${node}.invert`,
+						row.luma_keyer.invert,
+						(v) => {
+							live.invert = Boolean(v)
+							self.checkFeedbacks('video_mixer_key_inverted')
+						},
+						collect,
+					),
+				)
 			}
 		}),
 

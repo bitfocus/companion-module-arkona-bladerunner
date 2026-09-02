@@ -76,6 +76,23 @@ describe('ProcessorState', () => {
 		expect(state.label(output)).toBe('ISO 1 Out 0')
 	})
 
+	it('offers discovered video mixers using their live row names', () => {
+		const state = new ProcessorState()
+		state.videoMixers.set(2, {
+			index: 2,
+			mode: 'MIXER',
+			fader0: 0,
+			fader1: 1,
+			clip: -0.07,
+			gain: 1.131,
+			opacity: 1,
+			invert: false,
+		})
+		expect(state.videoMixerChoices()).toEqual([{ id: 2, label: 'Mixer 2' }])
+		state.nodeNames.set('mixer_2', 'Main Mix')
+		expect(state.videoMixerChoices()).toEqual([{ id: 2, label: 'Main Mix' }])
+	})
+
 	it('forgets everything when cleared', () => {
 		const state = new ProcessorState()
 		state.addOutput(output)
@@ -84,5 +101,6 @@ describe('ProcessorState', () => {
 		expect(state.outputs.size).toBe(0)
 		expect(state.outputsByPath.size).toBe(0)
 		expect(state.nodeNames.size).toBe(0)
+		expect(state.videoMixers.size).toBe(0)
 	})
 })

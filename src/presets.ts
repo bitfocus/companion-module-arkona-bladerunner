@@ -14,6 +14,7 @@ const BLUE = combineRgb(0, 90, 200)
 const SYSTEM_CATEGORY = 'System'
 const GREEN = combineRgb(0, 140, 0)
 const RED = combineRgb(200, 0, 0)
+const MIXER_CATEGORY = 'Video Mixers'
 
 /**
  * A read-only status button: a fixed caption above a live variable.
@@ -66,6 +67,24 @@ function headerPreset(category: string, label: string, description: string): Com
  */
 export function UpdatePresets(self: ModuleInstance): void {
 	const presets: CompanionPresetDefinitions = {}
+	const mixerButton = (
+		name: string,
+		text: string,
+		actionId: string,
+		actionOptions: Record<string, any>,
+		feedbackId?: string,
+		feedbackOptions: Record<string, any> = {},
+		feedbackColor = GREEN,
+	): CompanionButtonPresetDefinition => ({
+		type: 'button',
+		category: MIXER_CATEGORY,
+		name,
+		style: { text, size: '14', color: WHITE, bgcolor: DARK, show_topbar: false },
+		steps: [{ down: [{ actionId, options: actionOptions }], up: [] }],
+		feedbacks: feedbackId
+			? [{ feedbackId, options: feedbackOptions, style: { bgcolor: feedbackColor, color: WHITE } }]
+			: [],
+	})
 
 	presets.sys_header_control = headerPreset(SYSTEM_CATEGORY, 'Control', 'Identify this blade, and reboot it')
 	presets.sys_identify = {
@@ -238,6 +257,65 @@ export function UpdatePresets(self: ModuleInstance): void {
 				},
 			],
 		}
+	}
+
+	for (const mixer of self.processors.videoMixers.values()) {
+		const i = mixer.index
+		const name = self.processors.nodeNames.get(`mixer_${i}`) ?? `Mixer ${i}`
+		const key = `mixer_${i}`
+		presets[`${key}_header`] = headerPreset(MIXER_CATEGORY, name, 'Mode and A/B transition controls')
+
+		const modes: Array<[string, string, string]> = [
+			['MIXER', 'A/B MIX', 'A/B Mixer'],
+			['MIXER_INDEPENDENT', 'INDEP', 'Independent Mixer'],
+			['LUMA_KEYER', 'LUMA', 'Luma Keyer'],
+			['LUMA_KEYER_ADDITIVE', 'LUMA +', 'Additive Luma Keyer'],
+		]
+		for (const [mode, text, label] of modes) {
+			presets[`${key}_mode_${mode.toLowerCase()}`] = mixerButton(
+				`${name} - ${label} Mode`,
+				text,
+				'video_mixer_mode',
+				{ mixer: i, mode },
+				'video_mixer_mode',
+				{ mixer: i, mode },
+				BLUE,
+			)
+		}
+
+		for (const [input, label] of [
+			['a', 'A'],
+			['b', 'B'],
+		] as const) {
+			presets[`${key}_cut_${input}`] = mixerButton(
+				`${name} - Cut ${label}`,
+				`CUT\n${label}`,
+				'video_mixer_fader',
+				{ mixer: i, input, style: 'cut', duration: 1000 },
+				'video_mixer_input',
+				{ mixer: i, input },
+			)
+			presets[`${key}_fade_${input}`] = mixerButton(
+				`${name} - Fade ${label} (1 second)`,
+				`FADE\n${label}`,
+				'video_mixer_fader',
+				{ mixer: i, input, style: 'fade', duration: 1000 },
+				'video_mixer_input',
+				{ mixer: i, input },
+			)
+		}
+		presets[`${key}_toggle_cut`] = mixerButton(`${name} - Toggle Cut`, 'TAKE', 'video_mixer_fader', {
+			mixer: i,
+			input: 'toggle',
+			style: 'cut',
+			duration: 1000,
+		})
+		presets[`${key}_toggle_fade`] = mixerButton(`${name} - Toggle Fade (1 second)`, 'AUTO', 'video_mixer_fader', {
+			mixer: i,
+			input: 'toggle',
+			style: 'fade',
+			duration: 1000,
+		})
 	}
 
 	presets.sdi_header_status_inputs = headerPreset('SDI Inputs', 'Status', 'Current status of available SDI inputs')
