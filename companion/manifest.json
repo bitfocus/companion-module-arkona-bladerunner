@@ -2,7 +2,7 @@
 	"$schema": "../node_modules/@companion-module/base/assets/manifest.schema.json",
 	"id": "arkona-bladerunner",
 	"name": "arkona-bladerunner",
-	"shortname": "BLADE//runner",
+	"shortname": "BLADErunner",
 	"description": "Monitor and control Arkona Technologies BLADE//runner frames.",
 	"version": "0.0.0",
 	"license": "MIT",
