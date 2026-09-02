@@ -30,6 +30,10 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 	const sources = sourceChoices(registry)
 	const destinations = destinationChoices(registry)
 	const outputChoices = self.io.state.outputChoices()
+	const receiverChoices = [
+		...[...self.rtp.videoReceivers.values()].map((r) => ({ id: `v_${r.index}`, label: r.name })),
+		...[...self.rtp.audioReceivers.values()].map((r) => ({ id: `a_${r.index}`, label: r.name })),
+	]
 
 	self.setActionDefinitions({
 		/**
@@ -249,6 +253,37 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 				} catch (e: any) {
 					self.log('error', `Failed to set time source on SDI output ${index}: ${describeWriteError(e)}`)
 				}
+			},
+		},
+
+		/**
+		 * Counters accumulate until they are cleared, so clearing is how an operator establishes a
+		 * baseline before a test - "nothing since I pressed this" is the useful reading.
+		 */
+		clear_rtp_counters: {
+			name: 'RTP - Clear Receiver Counters',
+			description: "Reset a receiver's error and event counters",
+			options: [
+				{
+					id: 'receiver',
+					type: 'dropdown',
+					label: 'Receiver',
+					default: receiverChoices[0]?.id ?? '',
+					choices: receiverChoices,
+				},
+			],
+			callback: async (event) => {
+				const rx = self.connection.vm?.r_t_p_receiver
+				if (!rx) {
+					self.log('warn', 'Cannot clear counters: not connected, or this Blade has no RTP receiver')
+					return
+				}
+				const match = /^(v|a)_(\d+)$/.exec(String(event.options.receiver))
+				if (!match) return
+				const table = match[1] === 'v' ? rx.video_receivers : rx.audio_receivers
+				const generic = table.row(Number(match[2])).generic
+				await generic.clear_error_counters.write('Click')
+				await generic.clear_event_counters.write('Click')
 			},
 		},
 

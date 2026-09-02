@@ -1,12 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
-	activeIssues,
 	allowedDirections,
 	canSetDirection,
 	formatBool,
 	formatStandard,
-	formatIssueLabel,
-	formatIssueLabels,
 	IoState,
 	isLocked,
 	IoVariableDefinitions,
@@ -14,6 +11,7 @@ import {
 	type BncState,
 	type SdiInputState,
 } from '../io.js'
+import { activeIssues, formatIssueLabel, formatIssueLabels } from '../issues.js'
 
 const input = (over: Partial<SdiInputState> = {}): SdiInputState => ({
 	index: 0,

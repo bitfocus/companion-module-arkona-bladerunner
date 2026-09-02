@@ -1,6 +1,7 @@
 import type { CompanionVariableDefinition, CompanionVariableValue } from '@companion-module/base'
 import type * as VAPI from 'vapi'
 import type { ModuleInstance } from './main.js'
+import { watchIssues } from './issues.js'
 import { watchAll, watchKeyword, type Watchable } from './watch.js'
 
 /**
@@ -16,6 +17,29 @@ export const TEMPERATURES = [
 	['temp_ioboard', 'ioboard', 'IO board temperature (°C)', 'IO Board'],
 	['temp_fan_in_1', 'fan1_in', 'Air intake temperature, right (°C)', 'Intake R'],
 	['temp_fan_in_2', 'fan2_in', 'Air intake temperature, left (°C)', 'Intake L'],
+] as const
+
+/**
+ * The FPGA and CPU supply rails, in volts.
+ *
+ * Each entry is [variable id, device keyword, variable name].
+ */
+export const POWER_RAILS = [
+	['power_0v9', 'p0v9_b', 'FPGA 0.9 V rail (V)'],
+	['power_1v2_hbm', 'p1v2_hbm', 'HBM 1.2 V rail (V)'],
+	['power_1v8', 'p1v8', '1.8 V rail (V)'],
+	['power_5v0', 'p5v0', '5 V rail (V)'],
+] as const
+
+/**
+ * ECC counters, per memory.
+ *
+ * Correctable errors are normal in small numbers and worth trending; an uncorrectable one is a
+ * reason to take the Blade out of service, which is why they are separate variables.
+ */
+export const ECC_MEMORIES = [
+	['cpu_internal', 'CPU Internal'],
+	['cpu_memory', 'CPU Memory'],
 ] as const
 
 /**
@@ -108,6 +132,15 @@ export function SystemVariableDefinitions(counts: TableCounts): CompanionVariabl
 		{ variableId: 'num_cores', name: 'Active CPU Cores' },
 
 		...TEMPERATURES.map(([variableId, , name]) => ({ variableId, name })),
+		{ variableId: 'overtemperature_time', name: 'Accumulated Over-temperature Time' },
+		{ variableId: 'fanspeed_profile', name: 'Fan Speed Profile' },
+
+		...POWER_RAILS.map(([variableId, , name]) => ({ variableId, name })),
+
+		...ECC_MEMORIES.flatMap(([key, label]) => [
+			{ variableId: `ecc_${key}_correctable`, name: `ECC - ${label} Correctable Errors` },
+			{ variableId: `ecc_${key}_uncorrectable`, name: `ECC - ${label} Uncorrectable Errors` },
+		]),
 
 		...counts.fans.flatMap((i) => [
 			{ variableId: `fan_${i}_id`, name: `Fan ${i} - Identifier` },
@@ -203,6 +236,20 @@ export async function subscribeSystemVariables(
 
 	for (const [variableId, keyword] of TEMPERATURES) {
 		watchOne(variableId, sys.temperature[keyword], (v) => formatNullable(v))
+	}
+	watchOne('overtemperature_time', sys.temperature.accumulated_overtemperature_time, (v) => formatNullable(v, 0))
+	watchOne('fanspeed_profile', sys.temperature.current_fanspeed_profile, (v) => formatNullable(v, 0))
+	// The device's own view of whether it is too hot, rather than this module guessing a threshold.
+	pending.push(watchIssues(self, 'temperature', 'Temperature', sys.temperature.issues, (w) => self.connection.track(w)))
+
+	for (const [variableId, keyword] of POWER_RAILS) {
+		watchOne(variableId, sys.power[keyword], (v) => formatNullable(v, 2))
+	}
+
+	for (const [key] of ECC_MEMORIES) {
+		const ecc = sys.ecc[key]
+		watchOne(`ecc_${key}_correctable`, ecc.ce_count, (v) => formatNullable(v, 0))
+		watchOne(`ecc_${key}_uncorrectable`, ecc.ue_count, (v) => formatNullable(v, 0))
 	}
 
 	for (const i of counts.fans) {

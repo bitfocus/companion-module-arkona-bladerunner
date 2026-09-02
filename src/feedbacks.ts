@@ -1,7 +1,8 @@
 import { combineRgb } from '@companion-module/base'
 import * as VAPI from 'vapi'
 import { isPtpLocked } from './clocks.js'
-import { formatStandard, isLocked, SDI_OUTPUT_ISSUE_LABELS } from './io.js'
+import { formatStandard, isLocked } from './io.js'
+import { ANY_ISSUE_SOURCE, issueChoices, SDI_OUTPUT_ISSUE_LABELS } from './issues.js'
 import type { ModuleInstance } from './main.js'
 import {
 	buildRegistry,
@@ -108,6 +109,27 @@ export function UpdateFeedbacks(self: ModuleInstance, registry: FlowRegistry): v
 					// not the route that was asked for.
 					return !destination.takesChannel || destination.active[level].channel === wantedChannel
 				})
+			},
+		},
+
+		has_issues: {
+			name: 'Health - Object Reporting Issues',
+			description: 'True when the device reports an issue against the selected object, or against anything at all',
+			type: 'boolean',
+			defaultStyle: { bgcolor: RED, color: WHITE },
+			options: [
+				{
+					id: 'source',
+					type: 'dropdown',
+					label: 'Object',
+					default: ANY_ISSUE_SOURCE,
+					choices: issueChoices(self.issues),
+				},
+			],
+			callback: (feedback) => {
+				const wanted = String(feedback.options.source)
+				if (wanted === ANY_ISSUE_SOURCE) return self.issues.active().length > 0
+				return (self.issues.sources.get(wanted)?.flags.length ?? 0) > 0
 			},
 		},
 

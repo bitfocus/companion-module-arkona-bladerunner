@@ -1,5 +1,6 @@
 import type * as VAPI from 'vapi'
 import type * as VScript from 'vscript'
+import { watchIssues } from './issues.js'
 import type { ModuleInstance } from './main.js'
 import { activeSourceVariable, sourceIdForPath } from './routing.js'
 import type { AnyEssence, FlowLevel } from './routing.js'
@@ -271,7 +272,31 @@ export async function subscribeProcessors(self: ModuleInstance, vm: VAPI.AT1130.
 	 */
 	const nameNode = (node: string, fallback: string, row: NamedRow | null): void => {
 		state.nodeNames.set(node, fallback)
-		if (row) pending.push(watchRowName(self, node, row, fallback, (name) => state.nodeNames.set(node, name), collect))
+		if (row) {
+			pending.push(
+				watchRowName(
+					self,
+					node,
+					row,
+					fallback,
+					(name) => {
+						state.nodeNames.set(node, name)
+						self.issues.relabel(node, name)
+					},
+					collect,
+				),
+			)
+		}
+	}
+
+	/**
+	 * Follow a node's own health report, where it has one.
+	 *
+	 * Not every processor carries `issues` - a splitter and a shuffler do not - so this is called
+	 * only where the keyword exists rather than probed for.
+	 */
+	const nodeIssues = (node: string, keyword: Watchable<unknown>): void => {
+		pending.push(watchIssues(self, node, state.nodeNames.get(node) ?? node, keyword, collect))
 	}
 
 	/**
@@ -301,6 +326,7 @@ export async function subscribeProcessors(self: ModuleInstance, vm: VAPI.AT1130.
 				const row = mixer.instances.row(i)
 				const node = mixerNode(i)
 				nameNode(node, `Mixer ${i}`, row)
+				nodeIssues(node, row.issues)
 				addInput(`${node}_a`, ' A', node, 'video', demand(row.v_src0))
 				addInput(`${node}_b`, ' B', node, 'video', demand(row.v_src1))
 				addInput(`${node}_key`, ' Key', node, 'video', demand(row.luma_keyer.v_src))
@@ -315,6 +341,7 @@ export async function subscribeProcessors(self: ModuleInstance, vm: VAPI.AT1130.
 				const row = replay.delays.row(i)
 				const node = delayNode(i)
 				nameNode(node, `Delay ${i}`, row)
+				nodeIssues(node, row.issues)
 				// Inputs and outputs are separate tables on a delay, so they are indexed independently.
 				const [inputs, outputs] = await Promise.all([
 					childIndices(self, row.raw as RawSubtree, 'inputs'),
@@ -330,7 +357,9 @@ export async function subscribeProcessors(self: ModuleInstance, vm: VAPI.AT1130.
 
 			for (const i of await replay.players.allocated_indices()) {
 				const node = `player_${i}`
-				nameNode(node, `Player ${i}`, replay.players.row(i))
+				const player = replay.players.row(i)
+				nameNode(node, `Player ${i}`, player)
+				nodeIssues(node, player.issues)
 				addOutput(`${node}_out`, ' Output', node, 'video', `re_play.video.players[${i}].output.video`)
 			}
 		}),
@@ -342,6 +371,7 @@ export async function subscribeProcessors(self: ModuleInstance, vm: VAPI.AT1130.
 				const row = audioReplay.delays.row(i)
 				const node = audioDelayNode(i)
 				nameNode(node, `Audio Delay ${i}`, row)
+				nodeIssues(node, row.issues)
 				// An audio delay has a single input subtree rather than a table of them.
 				addInput(`${node}_in`, ' In', node, 'audio', demand(row.inputs.a_src))
 				for (const k of await childIndices(self, row.raw as RawSubtree, 'outputs')) {
@@ -351,7 +381,9 @@ export async function subscribeProcessors(self: ModuleInstance, vm: VAPI.AT1130.
 
 			for (const i of await audioReplay.players.allocated_indices()) {
 				const node = `audio_player_${i}`
-				nameNode(node, `Audio Player ${i}`, audioReplay.players.row(i))
+				const player = audioReplay.players.row(i)
+				nameNode(node, `Audio Player ${i}`, player)
+				nodeIssues(node, player.issues)
 				addOutput(`${node}_out`, ' Output', node, 'audio', `re_play.audio.players[${i}].output.audio`)
 			}
 		}),
@@ -368,6 +400,7 @@ export async function subscribeProcessors(self: ModuleInstance, vm: VAPI.AT1130.
 					const row = table.row(i)
 					const node = `${prefix}_${i}`
 					nameNode(node, `${label} ${i}`, row)
+					nodeIssues(node, row.issues)
 					addInput(`${node}_in`, ' In', node, 'video', demand(row.v_src))
 					addOutput(`${node}_out`, ' Out', node, 'video', `color_correction.${prefix}[${i}].output`)
 				}

@@ -1,5 +1,7 @@
+import type { CompanionVariableDefinition } from '@companion-module/base'
 import type * as VAPI from 'vapi'
 import type * as VScript from 'vscript'
+import { watchIssues } from './issues.js'
 import type { ModuleInstance } from './main.js'
 import { activeSourceVariable, sourceIdForPath, type FlowLevel } from './routing.js'
 import { watchAll, watchKeyword, watchRowName } from './watch.js'
@@ -51,6 +53,54 @@ export class RtpState {
 	}
 }
 
+/**
+ * A receiver's health, beyond its issues.
+ *
+ * Error counters accumulate (`err_acc`) and also report a consecutive run, which is what separates
+ * "it glitched once an hour ago" from "it is failing right now"; the event counters are cyclic, so
+ * they are published as-is and read as "has this changed since I looked".
+ */
+const RECEIVER_ERROR_COUNTERS = [
+	['rx_errors', 'rx_error', 'Receive Errors'],
+	['premature_reads', 'premature_read', 'Premature Reads'],
+	['liveness_timeouts', 'liveness_timeout', 'Liveness Timeouts'],
+	['phase_mismatches', 'phase_mismatch', 'Phase Mismatches'],
+] as const
+
+const RECEIVER_EVENT_COUNTERS = [
+	['starts_a', 'start_a', 'Stream A Starts'],
+	['starts_b', 'start_b', 'Stream B Starts'],
+	['switches_ab', 'switch_ab', 'A to B Switches'],
+	['switches_ba', 'switch_ba', 'B to A Switches'],
+	['stops', 'stop', 'Stops'],
+	['restarts', 'restart', 'Restarts'],
+] as const
+
+/** Every health variable a receiver publishes, for the definitions and for the watches. */
+export function receiverHealthVariables(id: string, label: string): Array<{ variableId: string; name: string }> {
+	return [
+		...RECEIVER_ERROR_COUNTERS.flatMap(([suffix, , name]) => [
+			{ variableId: `${id}_${suffix}`, name: `${label} - ${name}` },
+			{ variableId: `${id}_${suffix}_consecutive`, name: `${label} - Consecutive ${name}` },
+		]),
+		...RECEIVER_EVENT_COUNTERS.map(([suffix, , name]) => ({
+			variableId: `${id}_${suffix}`,
+			name: `${label} - ${name}`,
+		})),
+		{ variableId: `${id}_redundancy`, name: `${label} - Streams Present` },
+		{ variableId: `${id}_redundancy_required`, name: `${label} - Streams Required` },
+		{ variableId: `${id}_latency_spread_ms`, name: `${label} - Latency Spread (ms)` },
+	]
+}
+
+/** Every RTP health variable this Blade has, from what discovery found. */
+export function RtpVariableDefinitions(state: RtpState): CompanionVariableDefinition[] {
+	return [
+		...[...state.videoReceivers.values()].flatMap((r) => receiverHealthVariables(`rtp_rx_v_${r.index}`, r.name)),
+		...[...state.audioReceivers.values()].flatMap((r) => receiverHealthVariables(`rtp_rx_a_${r.index}`, r.name)),
+	]
+}
+
 export function rtpVideoReceiverPath(index: number): string {
 	return `r_t_p_receiver.video_receivers[${index}].media_specific.output.video`
 }
@@ -88,6 +138,15 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 
 	for (const i of videoRx) {
 		state.videoReceivers.set(i, { index: i, name: `RTP Video Rx ${i}` })
+		watchReceiverHealth(
+			self,
+			`rtp_rx_v_${i}`,
+			`RTP Video Rx ${i}`,
+			rx!.video_receivers.row(i),
+			batcher,
+			collect,
+			pending,
+		)
 		pending.push(
 			watchRowName(
 				self,
@@ -96,6 +155,7 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 				`RTP Video Rx ${i}`,
 				(name) => {
 					state.videoReceivers.get(i)!.name = name
+					self.issues.relabel(`rtp_rx_v_${i}`, name)
 				},
 				collect,
 			),
@@ -103,6 +163,15 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 	}
 	for (const i of audioRx) {
 		state.audioReceivers.set(i, { index: i, name: `RTP Audio Rx ${i}` })
+		watchReceiverHealth(
+			self,
+			`rtp_rx_a_${i}`,
+			`RTP Audio Rx ${i}`,
+			rx!.audio_receivers.row(i),
+			batcher,
+			collect,
+			pending,
+		)
 		pending.push(
 			watchRowName(
 				self,
@@ -111,6 +180,7 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 				`RTP Audio Rx ${i}`,
 				(name) => {
 					state.audioReceivers.get(i)!.name = name
+					self.issues.relabel(`rtp_rx_a_${i}`, name)
 				},
 				collect,
 			),
@@ -139,7 +209,20 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 			audioSourceName: null,
 		}
 		state.videoTransmitters.set(i, entry)
-		pending.push(watchRowName(self, `rtp_tx_v_${i}`, row, `RTP Video Tx ${i}`, (name) => (entry.name = name), collect))
+		pending.push(
+			watchRowName(
+				self,
+				`rtp_tx_v_${i}`,
+				row,
+				`RTP Video Tx ${i}`,
+				(name) => {
+					entry.name = name
+					self.issues.relabel(`rtp_tx_v_${i}`, name)
+				},
+				collect,
+			),
+		)
+		pending.push(watchIssues(self, `rtp_tx_v_${i}`, `RTP Video Tx ${i}`, row.generic.issues, collect))
 		pending.push(watchTally(self, `rtp_tx_v_${i}`, 'video', row.v_src.status, entry, batcher, collect))
 		// Only worth watching where the format actually carries audio.
 		if (entry.embedsAudio) {
@@ -160,7 +243,20 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 			audioSourceName: null,
 		}
 		state.audioTransmitters.set(i, entry)
-		pending.push(watchRowName(self, `rtp_tx_a_${i}`, row, `RTP Audio Tx ${i}`, (name) => (entry.name = name), collect))
+		pending.push(
+			watchRowName(
+				self,
+				`rtp_tx_a_${i}`,
+				row,
+				`RTP Audio Tx ${i}`,
+				(name) => {
+					entry.name = name
+					self.issues.relabel(`rtp_tx_a_${i}`, name)
+				},
+				collect,
+			),
+		)
+		pending.push(watchIssues(self, `rtp_tx_a_${i}`, `RTP Audio Tx ${i}`, row.generic.issues, collect))
 		pending.push(watchTally(self, `rtp_tx_a_${i}`, 'audio', row.a_src.status, entry, batcher, collect))
 	}
 
@@ -168,6 +264,91 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 	self.log(
 		'info',
 		`RTP endpoints: ${videoRx.length} video rx, ${audioRx.length} audio rx, ${videoTx.length} video tx, ${audioTx.length} audio tx`,
+	)
+}
+
+/**
+ * Subscribe a receiver's counters, redundancy and latency spread.
+ *
+ * These are the numbers that say whether a 2110 feed is actually healthy, as opposed to merely
+ * routed, so they are variables rather than anything the module reasons about.
+ */
+function watchReceiverHealth(
+	self: ModuleInstance,
+	id: string,
+	label: string,
+	receiver: any,
+	batcher: ModuleInstance['variables'],
+	collect: (w: VScript.Watcher) => void,
+	pending: Array<Promise<void>>,
+): void {
+	const generic = receiver.generic
+	pending.push(watchIssues(self, id, label, generic.issues, collect))
+
+	for (const [suffix, keyword] of RECEIVER_ERROR_COUNTERS) {
+		pending.push(
+			watchKeyword(
+				self,
+				`${id}.${keyword}`,
+				generic.error_counters[keyword],
+				(v: any) => {
+					batcher.set(`${id}_${suffix}`, v?.err_acc ?? 0)
+					batcher.set(`${id}_${suffix}_consecutive`, v?.consec_err_count ?? 0)
+				},
+				collect,
+			),
+		)
+	}
+
+	for (const [suffix, keyword] of RECEIVER_EVENT_COUNTERS) {
+		pending.push(
+			watchKeyword(
+				self,
+				`${id}.${keyword}`,
+				generic.event_counters[keyword],
+				(v: any) => {
+					batcher.set(`${id}_${suffix}`, Number(v ?? 0))
+				},
+				collect,
+			),
+		)
+	}
+
+	// How many of the SDP's streams are actually arriving, against how many are demanded - a 2022-7
+	// feed running on one leg is healthy until the other leg is needed.
+	pending.push(
+		watchKeyword(
+			self,
+			`${id}.redundancy`,
+			generic.redundancy_levels.nominally_present.overall,
+			(v: any) => {
+				batcher.set(`${id}_redundancy`, Number(v ?? 0))
+			},
+			collect,
+		),
+	)
+	// Required at track A and B separately - a 2022-7 receiver demands one from each.
+	pending.push(
+		watchKeyword(
+			self,
+			`${id}.required_redundancy`,
+			generic.required_redundancy_level,
+			(v: any) => {
+				batcher.set(`${id}_redundancy_required`, `${Number(v?.sdp_a ?? 0)}/${Number(v?.sdp_b ?? 0)}`)
+			},
+			collect,
+		),
+	)
+	pending.push(
+		watchKeyword(
+			self,
+			`${id}.latency_spread`,
+			generic.latency_spread.overall,
+			(v: any) => {
+				batcher.set(`${id}_latency_spread_ms`, v == null ? '' : v.ms().toFixed(3))
+			},
+			collect,
+		),
 	)
 }
 

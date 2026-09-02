@@ -2,6 +2,7 @@ import type { CompanionVariableDefinition, DropdownChoice } from '@companion-mod
 import type * as VAPI from 'vapi'
 import type * as VScript from 'vscript'
 import type { ModuleInstance } from './main.js'
+import { activeIssues, formatIssueLabels, reportIssues } from './issues.js'
 import {
 	activeSourceVariable,
 	buildRegistry,
@@ -144,39 +145,6 @@ export function IoVariableDefinitions(state: IoState): CompanionVariableDefiniti
 			{ variableId: `sdi_out_${i}_time_source`, name: `SDI Output ${i} - Time Source` },
 		]),
 	]
-}
-
-/** Device keys stay in `SdiOutputState.issues` so feedbacks can match them. */
-export const SDI_OUTPUT_ISSUE_LABELS: Record<string, string> = {
-	std_mismatch: 'Standard mismatch',
-	missing_t_src: 'Missing time source',
-	different_genlocks: 'Different genlocks',
-	no_12g_support: 'No 12G support',
-	input_out_of_linephaser_range: 'Input out of linephaser range',
-}
-
-/** `{ std_mismatch: true, no_12g_support: false }` -> `['std_mismatch']`. */
-export function activeIssues(issues: Record<string, unknown> | null | undefined): string[] {
-	if (!issues) return []
-	return Object.entries(issues)
-		.filter(([, v]) => v === true)
-		.map(([k]) => k)
-}
-
-/** `['missing_t_src', 'std_mismatch']` -> `'Missing time source, Standard mismatch'`. */
-export function formatIssueLabels(issues: string[]): string {
-	return issues.map(formatIssueLabel).join(', ')
-}
-
-export function formatIssueLabel(key: string): string {
-	return SDI_OUTPUT_ISSUE_LABELS[key] ?? humanizeSnakeCase(key)
-}
-
-function humanizeSnakeCase(key: string): string {
-	const trimmed = key.trim()
-	if (!trimmed) return trimmed
-	const spaced = trimmed.replaceAll('_', ' ')
-	return spaced.charAt(0).toUpperCase() + spaced.slice(1)
 }
 
 /**
@@ -445,6 +413,8 @@ export class IoManager {
 							state.issues = activeIssues(v)
 							batcher.set(`sdi_out_${i}_issues`, formatIssueLabels(state.issues))
 							self.checkFeedbacks('sdi_output_issues')
+							// Also reported through the device-wide layer, so one feedback can watch everything.
+							reportIssues(self, `sdi_out_${i}`, `SDI Output ${i}`, state.issues)
 						},
 						collect,
 					)

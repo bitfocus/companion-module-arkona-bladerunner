@@ -3,10 +3,11 @@ import type * as VAPI from 'vapi'
 import { UpdateActions } from './actions.js'
 import { ClockState, ClockVariableDefinitions, subscribeClocks } from './clocks.js'
 import { ProcessorState, subscribeProcessors } from './processors.js'
-import { RtpState, subscribeRtp } from './rtp.js'
+import { RtpState, RtpVariableDefinitions, subscribeRtp } from './rtp.js'
 import { GetConfigFields, type ModuleConfig, type ModuleSecrets } from './config.js'
 import { UpdateFeedbacks } from './feedbacks.js'
 import { IoManager, IoVariableDefinitions } from './io.js'
+import { IssueState, IssueVariableDefinitions, publishIssues } from './issues.js'
 import { UpdatePresets } from './presets.js'
 import {
 	activeSourceVariable,
@@ -40,6 +41,7 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 	readonly clocks = new ClockState()
 	readonly rtp = new RtpState()
 	readonly processors = new ProcessorState()
+	readonly issues = new IssueState()
 	/** Mirrors the front panel blink keyword, so the identify feedback evaluates synchronously. */
 	identifyActive = false
 
@@ -89,6 +91,8 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 			...IoVariableDefinitions(this.io.state),
 			...FlowVariableDefinitions(registry),
 			...ClockVariableDefinitions(this.clocks),
+			...RtpVariableDefinitions(this.rtp),
+			...IssueVariableDefinitions(this.issues),
 		])
 		UpdateActions(this, registry)
 		UpdateFeedbacks(this, registry)
@@ -98,6 +102,8 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 		// exists is dropped. Discovery necessarily rebuilds definitions after some values have been
 		// published, so every rebuild re-publishes what the registry currently knows.
 		this.#publishFlowValues(registry)
+		// Issue values are published by their own watches, so a rebuild has to republish them too.
+		publishIssues(this)
 	}
 
 	/**
@@ -167,6 +173,7 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 		this.clocks.clear()
 		this.rtp.clear()
 		this.processors.clear()
+		this.issues.clear()
 		this.io.dispose()
 		this.variables.dispose()
 		await this.connection.disconnect()
