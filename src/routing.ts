@@ -110,6 +110,12 @@ export interface FlowDestination extends Omit<FlowPort, 'path'> {
 	active: Record<FlowLevel, ActiveSource>
 }
 
+/** Every level empty, to be spread and then overridden per level a port actually carries. */
+const NO_ACTIVE_SOURCES: Record<FlowLevel, ActiveSource> = {
+	video: { sourceId: null, label: null },
+	audio: { sourceId: null, label: null },
+}
+
 export interface FlowRegistry {
 	sources: Map<string, FlowPort>
 	destinations: Map<string, FlowDestination>
@@ -139,10 +145,8 @@ export function sourceIdForPath(path: string | null | undefined, level: FlowLeve
 	const rtp = RTP_RECEIVER_PATH[level].exec(path)
 	if (rtp) return rtpReceiverId(level, Number(rtp[1]))
 
-	if (level === 'video') {
-		const processor = processorOutputId(path)
-		if (processor) return processor
-	}
+	const processor = processorOutputIdForLevel(path, level)
+	if (processor) return processor
 
 	return generatorSources(level).find((g) => g.path === path)?.id ?? null
 }
@@ -154,14 +158,26 @@ export function sourceIdForPath(path: string | null | undefined, level: FlowLeve
  * must produce exactly the ID `subscribeProcessors` registered, or a route from a processor would
  * report an empty tally despite having been applied.
  */
-const PROCESSOR_OUTPUT_PATHS: Array<[RegExp, (m: RegExpExecArray) => string]> = [
-	[/^video_mixer\.instances\[(\d+)\]\.output$/, (m) => `mixer_${m[1]}_out`],
-	[/^re_play\.video\.delays\[(\d+)\]\.outputs\[(\d+)\]\.video$/, (m) => `delay_${m[1]}_out_${m[2]}`],
-	[/^re_play\.video\.players\[(\d+)\]\.output\.video$/, (m) => `player_${m[1]}_out`],
+const PROCESSOR_OUTPUT_PATHS: Array<[FlowLevel, RegExp, (m: RegExpExecArray) => string]> = [
+	['video', /^video_mixer\.instances\[(\d+)\]\.output$/, (m) => `mixer_${m[1]}_out`],
+	['video', /^re_play\.video\.delays\[(\d+)\]\.outputs\[(\d+)\]\.video$/, (m) => `delay_${m[1]}_out_${m[2]}`],
+	['video', /^re_play\.video\.players\[(\d+)\]\.output\.video$/, (m) => `player_${m[1]}_out`],
+	['audio', /^re_play\.audio\.delays\[(\d+)\]\.outputs\[(\d+)\]\.audio$/, (m) => `audio_delay_${m[1]}_out_${m[2]}`],
 ]
 
+/** The ID for a processor output path, whatever level it belongs to. */
 export function processorOutputId(path: string): string | null {
-	for (const [pattern, toId] of PROCESSOR_OUTPUT_PATHS) {
+	for (const [, pattern, toId] of PROCESSOR_OUTPUT_PATHS) {
+		const match = pattern.exec(path)
+		if (match) return toId(match)
+	}
+	return null
+}
+
+/** As above, but only when the output carries the level being resolved. */
+function processorOutputIdForLevel(path: string, level: FlowLevel): string | null {
+	for (const [outputLevel, pattern, toId] of PROCESSOR_OUTPUT_PATHS) {
+		if (outputLevel !== level) continue
 		const match = pattern.exec(path)
 		if (match) return toId(match)
 	}
@@ -337,7 +353,7 @@ export function buildRegistry({ io, rtp, processors }: FlowStateSources): FlowRe
 			id: output.id,
 			label: output.label,
 			path: output.path,
-			levels: ['video'],
+			levels: [output.level],
 			kind: 'processor',
 			node: output.node,
 		})
@@ -349,15 +365,15 @@ export function buildRegistry({ io, rtp, processors }: FlowStateSources): FlowRe
 			id: input.id,
 			label: input.label,
 			index: 0,
-			levels: ['video'],
+			levels: [input.level],
 			kind: 'processor',
 			node: input.node,
 			active: {
-				video: {
-					sourceId: sourceIdForPath(input.sourcePath, 'video'),
+				...NO_ACTIVE_SOURCES,
+				[input.level]: {
+					sourceId: sourceIdForPath(input.sourcePath, input.level),
 					label: input.sourceName ?? input.sourcePath ?? null,
 				},
-				audio: { sourceId: null, label: null },
 			},
 		})
 	}
@@ -393,6 +409,8 @@ export function buildRegistry({ io, rtp, processors }: FlowStateSources): FlowRe
 /** True when the destination's levels come from different sources - a breakaway. */
 export function isBreakaway(destination: FlowDestination | undefined): boolean {
 	if (!destination) return false
+	// A single-level destination has nothing to break away from.
+	if (destination.levels.length < 2) return false
 	return destination.active.video.sourceId !== destination.active.audio.sourceId
 }
 
@@ -428,10 +446,12 @@ export function FlowVariableDefinitions(registry: FlowRegistry): CompanionVariab
 
 		...[...registry.destinations.values()].flatMap((d) => [
 			{ variableId: `dst_label_${d.id}`, name: `Flows - ${d.label} Label` },
-			{ variableId: `dest_${d.id}_breakaway`, name: `Flows - ${d.label} Breakaway` },
+			// Breakaway only exists where there are two levels to break apart.
+			...(d.levels.length > 1 ? [{ variableId: `dest_${d.id}_breakaway`, name: `Flows - ${d.label} Breakaway` }] : []),
 			// One per (level, destination): the router spec's level-to-level shape. The value is
-			// always a source ID the route action accepts.
-			...FLOW_LEVELS.flatMap((level) => [
+			// always a source ID the route action accepts. A single-level destination - a video
+			// delay input, say - gets only its own level, never a stray audio one.
+			...d.levels.flatMap((level) => [
 				{
 					variableId: activeSourceVariable(d.id, level),
 					name: `Flows - ${d.label} ${LEVEL_LABEL[level]} Active Source ID`,
@@ -534,6 +554,11 @@ function processorInputKeyword(vm: VAPI.AT1130.Root, id: string): DirectSourceKe
 		return vm.re_play.video.delays.row(Number(delay[1])).inputs.row(Number(delay[2])).v_src
 	}
 
+	const audioDelay = /^audio_delay_(\d+)_in$/.exec(id)
+	if (audioDelay && vm.re_play) {
+		return vm.re_play.audio.delays.row(Number(audioDelay[1])).inputs.a_src
+	}
+
 	if (id === 'monitor_live' && vm.monitoring) return vm.monitoring.live_view.v_src
 
 	return null
@@ -585,7 +610,7 @@ export function resolveDestinationWriter(
 	if (destination.kind === 'processor') {
 		const keyword = processorInputKeyword(vm, destination.id)
 		if (!keyword) return null
-		return { video: async (essence) => keyword.command.write(essence as never) }
+		return { [destination.levels[0]]: async (essence: AnyEssence | null) => keyword.command.write(essence as never) }
 	}
 
 	if (destination.kind === 'rtp_transmitter') {

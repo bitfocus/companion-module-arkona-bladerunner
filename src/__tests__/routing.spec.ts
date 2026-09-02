@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { IoState, type SdiInputState, type SdiOutputState } from '../io.js'
-import { ProcessorState } from '../processors.js'
+import { applyNodeName, ProcessorState } from '../processors.js'
 import { RtpState } from '../rtp.js'
 import {
 	buildRegistry,
@@ -535,6 +535,8 @@ describe('processors as flow endpoints', () => {
 			id: 'mixer_0_a',
 			label: 'Mixer 0 A',
 			node: 'mixer_0',
+			suffix: '',
+			level: 'video',
 			sourcePath: 'i_o_module.input[1].sdi.output.video',
 			sourceName: 'SDI Input 1',
 		})
@@ -542,6 +544,8 @@ describe('processors as flow endpoints', () => {
 			id: 'mixer_0_b',
 			label: 'Mixer 0 B',
 			node: 'mixer_0',
+			suffix: '',
+			level: 'video',
 			sourcePath: null,
 			sourceName: null,
 		})
@@ -549,19 +553,42 @@ describe('processors as flow endpoints', () => {
 			id: 'delay_0_in_0',
 			label: 'Delay 0 In 0',
 			node: 'delay_0',
+			suffix: '',
+			level: 'video',
 			sourcePath: null,
 			sourceName: null,
+		})
+		p.inputs.set('audio_delay_0_in', {
+			id: 'audio_delay_0_in',
+			label: 'Audio Delay 0 In',
+			node: 'audio_delay_0',
+			suffix: '',
+			level: 'audio',
+			sourcePath: 'i_o_module.input[1].sdi.output.audio',
+			sourceName: 'SDI Input 1 Audio',
+		})
+		p.outputs.set('audio_delay_0_out_0', {
+			id: 'audio_delay_0_out_0',
+			label: 'Audio Delay 0 Out 0',
+			node: 'audio_delay_0',
+			suffix: '',
+			level: 'audio',
+			path: 're_play.audio.delays[0].outputs[0].audio',
 		})
 		p.outputs.set('mixer_0_out', {
 			id: 'mixer_0_out',
 			label: 'Mixer 0 Output',
 			node: 'mixer_0',
+			suffix: '',
+			level: 'video',
 			path: 'video_mixer.instances[0].output',
 		})
 		p.outputs.set('delay_0_out_0', {
 			id: 'delay_0_out_0',
 			label: 'Delay 0 Out 0',
 			node: 'delay_0',
+			suffix: '',
+			level: 'video',
 			path: 're_play.video.delays[0].outputs[0].video',
 		})
 		return p
@@ -579,10 +606,39 @@ describe('processors as flow endpoints', () => {
 		expect(r.destinations.get('delay_0_in_0')?.label).toBe('Delay 0 In 0')
 	})
 
-	it('makes processors video-only', () => {
+	// A video delay has one video in and one video out - offering an audio level on it would be a
+	// route that can never be applied.
+	it('gives each processor only its own level', () => {
 		const r = registry()
 		expect(r.sources.get('mixer_0_out')?.levels).toEqual(['video'])
 		expect(r.destinations.get('mixer_0_a')?.levels).toEqual(['video'])
+		expect(r.destinations.get('delay_0_in_0')?.levels).toEqual(['video'])
+		expect(r.sources.get('audio_delay_0_out_0')?.levels).toEqual(['audio'])
+		expect(r.destinations.get('audio_delay_0_in')?.levels).toEqual(['audio'])
+	})
+
+	it('tallies an audio delay input on the audio level', () => {
+		const d = registry().destinations.get('audio_delay_0_in')
+		expect(d?.active.audio.sourceId).toBe('sdi_in_1')
+		expect(d?.active.video.sourceId).toBeNull()
+	})
+
+	// A single-level destination has nothing to break away from.
+	it('never reports a breakaway on a single-level destination', () => {
+		expect(isBreakaway(registry().destinations.get('delay_0_in_0'))).toBe(false)
+		expect(isBreakaway(registry().destinations.get('audio_delay_0_in'))).toBe(false)
+	})
+
+	it('defines variables only for the levels a processor carries', () => {
+		const ids = new Set(FlowVariableDefinitions(registry()).map((v) => v.variableId))
+		expect(ids.has('dest_delay_0_in_0_video_active_source')).toBe(true)
+		expect(ids.has('dest_delay_0_in_0_audio_active_source')).toBe(false)
+		expect(ids.has('dest_delay_0_in_0_breakaway')).toBe(false)
+		expect(ids.has('dest_audio_delay_0_in_audio_active_source')).toBe(true)
+		expect(ids.has('dest_audio_delay_0_in_video_active_source')).toBe(false)
+		// An SDI output still carries both levels and its breakaway.
+		expect(ids.has('dest_sdi_out_8_audio_active_source')).toBe(true)
+		expect(ids.has('dest_sdi_out_8_breakaway')).toBe(true)
 	})
 
 	it('tallies a processor input like any other destination', () => {
@@ -600,21 +656,107 @@ describe('processors as flow endpoints', () => {
 	})
 })
 
+// A rename on the device must reach every label built from the node's name, and through them the
+// choices and the `src_label_*`/`dst_label_*` variables.
+describe('applyNodeName', () => {
+	function delayState(): ProcessorState {
+		const p = new ProcessorState()
+		p.nodeNames.set('delay_0', 'Delay 0')
+		p.inputs.set('delay_0_in_0', {
+			id: 'delay_0_in_0',
+			label: 'Delay 0 In 0',
+			node: 'delay_0',
+			suffix: ' In 0',
+			level: 'video',
+			sourcePath: null,
+			sourceName: null,
+		})
+		p.outputs.set('delay_0_out_0', {
+			id: 'delay_0_out_0',
+			label: 'Delay 0 Out 0',
+			node: 'delay_0',
+			suffix: ' Out 0',
+			level: 'video',
+			path: 're_play.video.delays[0].outputs[0].video',
+		})
+		return p
+	}
+
+	it('relabels every input and output on the renamed node', () => {
+		const p = delayState()
+		expect(applyNodeName(p, 'delay_0', 'ISO 1')).toBe(true)
+		expect(p.inputs.get('delay_0_in_0')?.label).toBe('ISO 1 In 0')
+		expect(p.outputs.get('delay_0_out_0')?.label).toBe('ISO 1 Out 0')
+
+		const r = buildRegistry(flowState(chassis(), noRtp(), p))
+		expect(r.destinations.get('delay_0_in_0')?.label).toBe('ISO 1 In 0')
+		expect(flowRegistryValues(r)['src_label_delay_0_out_0']).toBe('ISO 1 Out 0')
+	})
+
+	it('reports no change when the name is the same', () => {
+		expect(applyNodeName(delayState(), 'delay_0', 'Delay 0')).toBe(false)
+	})
+
+	it('leaves other nodes alone', () => {
+		const p = delayState()
+		p.nodeNames.set('mixer_0', 'Mixer 0')
+		p.inputs.set('mixer_0_a', {
+			id: 'mixer_0_a',
+			label: 'Mixer 0 A',
+			node: 'mixer_0',
+			suffix: ' A',
+			level: 'video',
+			sourcePath: null,
+			sourceName: null,
+		})
+		applyNodeName(p, 'delay_0', 'ISO 1')
+		expect(p.inputs.get('mixer_0_a')?.label).toBe('Mixer 0 A')
+	})
+})
+
 describe('isSelfLoop', () => {
 	const p = new ProcessorState()
-	p.inputs.set('mixer_0_a', { id: 'mixer_0_a', label: 'A', node: 'mixer_0', sourcePath: null, sourceName: null })
-	p.inputs.set('mixer_1_a', { id: 'mixer_1_a', label: 'A', node: 'mixer_1', sourcePath: null, sourceName: null })
-	p.inputs.set('delay_0_in_0', { id: 'delay_0_in_0', label: 'In', node: 'delay_0', sourcePath: null, sourceName: null })
+	p.inputs.set('mixer_0_a', {
+		id: 'mixer_0_a',
+		label: 'A',
+		node: 'mixer_0',
+		suffix: '',
+		level: 'video',
+		sourcePath: null,
+		sourceName: null,
+	})
+	p.inputs.set('mixer_1_a', {
+		id: 'mixer_1_a',
+		label: 'A',
+		node: 'mixer_1',
+		suffix: '',
+		level: 'video',
+		sourcePath: null,
+		sourceName: null,
+	})
+	p.inputs.set('delay_0_in_0', {
+		id: 'delay_0_in_0',
+		label: 'In',
+		node: 'delay_0',
+		suffix: '',
+		level: 'video',
+		sourcePath: null,
+		sourceName: null,
+	})
 	p.outputs.set('mixer_0_out', {
 		id: 'mixer_0_out',
 		label: 'Out',
 		node: 'mixer_0',
+		suffix: '',
+		level: 'video',
 		path: 'video_mixer.instances[0].output',
 	})
 	p.outputs.set('delay_0_out_0', {
 		id: 'delay_0_out_0',
 		label: 'Out',
 		node: 'delay_0',
+		suffix: '',
+		level: 'video',
 		path: 're_play.video.delays[0].outputs[0].video',
 	})
 	const r = buildRegistry(flowState(chassis(), noRtp(), p))
@@ -648,6 +790,7 @@ describe('processorOutputId', () => {
 		expect(processorOutputId('video_mixer.instances[0].output')).toBe('mixer_0_out')
 		expect(processorOutputId('re_play.video.delays[0].outputs[1].video')).toBe('delay_0_out_1')
 		expect(processorOutputId('re_play.video.players[2].output.video')).toBe('player_2_out')
+		expect(processorOutputId('re_play.audio.delays[1].outputs[0].audio')).toBe('audio_delay_1_out_0')
 	})
 
 	it('ignores anything that is not a processor output', () => {
@@ -657,7 +800,9 @@ describe('processorOutputId', () => {
 
 	it('round-trips through sourceIdForPath on the video level', () => {
 		expect(sourceIdForPath('video_mixer.instances[1].output', 'video')).toBe('mixer_1_out')
-		// Processor outputs are video only.
+		// A processor output resolves on its own level only.
 		expect(sourceIdForPath('video_mixer.instances[1].output', 'audio')).toBeNull()
+		expect(sourceIdForPath('re_play.audio.delays[1].outputs[0].audio', 'audio')).toBe('audio_delay_1_out_0')
+		expect(sourceIdForPath('re_play.audio.delays[1].outputs[0].audio', 'video')).toBeNull()
 	})
 })

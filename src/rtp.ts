@@ -2,7 +2,7 @@ import type * as VAPI from 'vapi'
 import type * as VScript from 'vscript'
 import type { ModuleInstance } from './main.js'
 import { activeSourceVariable, sourceIdForPath, type FlowLevel } from './routing.js'
-import { watchAll, watchKeyword } from './watch.js'
+import { watchAll, watchKeyword, watchRowName as watchNamedRowName, type NamedRow } from './watch.js'
 
 /** An RTP receiver, which is a routing source. */
 export interface RtpReceiverState {
@@ -95,6 +95,7 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 		state.videoReceivers.set(i, { index: i, name: `RTP Video Rx ${i}` })
 		await watchRowName(
 			self,
+			`rtp_rx_v_${i}`,
 			rx!.video_receivers.row(i),
 			(name) => {
 				state.videoReceivers.get(i)!.name = endpointName(name, `RTP Video Rx ${i}`)
@@ -106,6 +107,7 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 		state.audioReceivers.set(i, { index: i, name: `RTP Audio Rx ${i}` })
 		await watchRowName(
 			self,
+			`rtp_rx_a_${i}`,
 			rx!.audio_receivers.row(i),
 			(name) => {
 				state.audioReceivers.get(i)!.name = endpointName(name, `RTP Audio Rx ${i}`)
@@ -138,6 +140,7 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 		state.videoTransmitters.set(i, entry)
 		await watchRowName(
 			self,
+			`rtp_tx_v_${i}`,
 			row,
 			(name) => {
 				entry.name = endpointName(name, `RTP Video Tx ${i}`)
@@ -166,6 +169,7 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 		state.audioTransmitters.set(i, entry)
 		await watchRowName(
 			self,
+			`rtp_tx_a_${i}`,
 			row,
 			(name) => {
 				entry.name = endpointName(name, `RTP Audio Tx ${i}`)
@@ -182,18 +186,30 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 	)
 }
 
-/** Row names are a keyword on named-table rows, so they are read once rather than watched. */
+/**
+ * Follow a row's name.
+ *
+ * Renaming a stream in the device's web UI has to reach the choices and the label variables, so
+ * the name is watched rather than read once - `apply` writes it into the state and the rebuild
+ * republishes everything derived from it.
+ */
 async function watchRowName(
 	self: ModuleInstance,
-	row: { row_name: () => Promise<string> },
+	id: string,
+	row: NamedRow,
 	apply: (name: string) => void,
-	_collect: (w: VScript.Watcher) => void,
+	collect: (w: VScript.Watcher) => void,
 ): Promise<void> {
-	try {
-		apply(await row.row_name())
-	} catch (e: any) {
-		self.log('debug', `Could not read RTP row name: ${e?.message ?? e}`)
-	}
+	await watchNamedRowName(
+		self,
+		`${id}.row_name`,
+		row,
+		(name) => {
+			apply(name)
+			self.scheduleDefinitionRefresh()
+		},
+		collect,
+	)
 }
 
 /**

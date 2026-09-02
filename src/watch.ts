@@ -39,3 +39,32 @@ export async function watchKeyword<T>(
 		self.log('debug', `Could not watch ${label}: ${e?.message ?? e}`)
 	}
 }
+
+/**
+ * A named-table row, whose name is a keyword like any other.
+ *
+ * `row_name()` is a one-shot read, but the same value sits at `row_name_status` on the row's own
+ * KWL, so a rename made in the device's web UI can be followed live instead of going stale until
+ * the next reconnect.
+ */
+export interface NamedRow {
+	raw: {
+		watch: (path: { kw: any }, handler: (payload: any) => void, opts?: object) => Promise<VScript.Watcher>
+	}
+}
+
+export async function watchRowName(
+	self: ModuleInstance,
+	label: string,
+	row: NamedRow,
+	apply: (name: string) => void,
+	collect: (watcher: VScript.Watcher) => void,
+): Promise<void> {
+	await watchKeyword<unknown>(
+		self,
+		label,
+		{ watch: async (handler, opts) => row.raw.watch({ kw: 'row_name_status' }, handler, opts) },
+		(v) => apply(typeof v === 'string' ? v : ''),
+		collect,
+	)
+}

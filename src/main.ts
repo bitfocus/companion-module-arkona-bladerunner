@@ -11,7 +11,6 @@ import { UpdatePresets } from './presets.js'
 import {
 	activeSourceVariable,
 	buildRegistry,
-	FLOW_LEVELS,
 	flowRegistryValues,
 	FlowVariableDefinitions,
 	isBreakaway,
@@ -43,6 +42,8 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 	readonly processors = new ProcessorState()
 	/** Mirrors the front panel blink keyword, so the identify feedback evaluates synchronously. */
 	identifyActive = false
+
+	#refreshTimer: NodeJS.Timeout | null = null
 
 	/** Everything `buildRegistry` projects the routing graph from. */
 	get flowState(): FlowStateSources {
@@ -99,17 +100,35 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 		this.#publishFlowValues(registry)
 	}
 
+	/**
+	 * Rebuild definitions soon, coalescing a burst into one pass.
+	 *
+	 * Renaming a row on the device changes a label that appears in dropdown choices, in variable
+	 * names and in the `src_label_*`/`dst_label_*` values, so the whole rebuild is the update - but
+	 * discovery delivers every name at once, and each rebuild republishes every variable.
+	 */
+	scheduleDefinitionRefresh(): void {
+		if (this.#refreshTimer) return
+		this.#refreshTimer = setTimeout(() => {
+			this.#refreshTimer = null
+			this.rebuildDefinitions()
+		}, 250)
+	}
+
 	#publishFlowValues(registry: FlowRegistry): void {
 		for (const [variableId, value] of Object.entries(flowRegistryValues(registry))) {
 			this.variables.set(variableId, value)
 		}
 		for (const destination of registry.destinations.values()) {
-			for (const level of FLOW_LEVELS) {
+			// Only the levels the destination carries have variables defined for them.
+			for (const level of destination.levels) {
 				const variable = activeSourceVariable(destination.id, level)
 				this.variables.set(variable, destination.active[level].sourceId ?? '')
 				this.variables.set(`${variable}_label`, destination.active[level].label ?? '')
 			}
-			this.variables.set(`dest_${destination.id}_breakaway`, String(isBreakaway(destination)))
+			if (destination.levels.length > 1) {
+				this.variables.set(`dest_${destination.id}_breakaway`, String(isBreakaway(destination)))
+			}
 		}
 		this.variables.flush()
 	}
@@ -140,6 +159,8 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 
 	// When module gets deleted
 	async destroy(): Promise<void> {
+		if (this.#refreshTimer) clearTimeout(this.#refreshTimer)
+		this.#refreshTimer = null
 		this.clocks.clear()
 		this.rtp.clear()
 		this.processors.clear()

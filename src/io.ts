@@ -356,8 +356,12 @@ export class IoManager {
 						`in[${i}].brief`,
 						port.sdi.output.video.brief,
 						(v) => {
+							// The brief follows whatever the port is named on the device, so a rename there has
+							// to reach the source label and the choices as well as this variable.
+							const changed = state.name !== v
 							state.name = v
 							batcher.set(`sdi_in_${i}_name`, v)
+							if (changed) self.scheduleDefinitionRefresh()
 						},
 						collect,
 					)
