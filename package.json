@@ -1,0 +1,55 @@
+{
+	"name": "arkona-bladerunner",
+	"version": "0.1.0",
+	"main": "dist/main.js",
+	"type": "module",
+	"scripts": {
+		"postinstall": "husky",
+		"format": "prettier -w .",
+		"package": "run build && companion-module-build",
+		"build": "rimraf dist && run build:main",
+		"build:main": "tsc -p tsconfig.build.json",
+		"dev": "tsc -p tsconfig.build.json --watch",
+		"lint:raw": "eslint",
+		"lint": "run lint:raw .",
+		"check-types": "tsc -p tsconfig.build.json --noEmit && tsc -p tsconfig.json --noEmit",
+		"test": "vitest run"
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/bitfocus/companion-module-arkona-bladerunner.git"
+	},
+	"engines": {
+		"node": "^22.20",
+		"yarn": "^4"
+	},
+	"dependencies": {
+		"@companion-module/base": "~1.14.1",
+		"vapi": "file:./vendor/vapi",
+		"vscript": "file:./vendor/vscript",
+		"ws": "^8.21.3"
+	},
+	"devDependencies": {
+		"@companion-module/tools": "^2.8.0",
+		"@types/node": "^22.20.1",
+		"eslint": "^9.39.5",
+		"husky": "^9.1.7",
+		"lint-staged": "^16.4.0",
+		"prettier": "^3.9.6",
+		"rimraf": "^6.1.3",
+		"typescript": "~5.9.3",
+		"typescript-eslint": "^8.68.0",
+		"vitest": "^4.1.11"
+	},
+	"prettier": "@companion-module/tools/.prettierrc.json",
+	"lint-staged": {
+		"*.{css,json,md,scss}": [
+			"prettier --write"
+		],
+		"*.{ts,tsx,js,jsx}": [
+			"yarn lint:raw --fix"
+		]
+	},
+	"packageManager": "yarn@4.18.0"
+}

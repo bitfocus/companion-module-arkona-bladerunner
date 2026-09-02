@@ -1,0 +1,12 @@
+node_modules/
+package-lock.json
+/pkg
+/*.tgz
+/dist
+DEBUG-*
+/.yarn
+/.vscode
+/scripts
+.DS_Store
+/docs
+/vendor

@@ -1,0 +1,27 @@
+{
+	"$schema": "../node_modules/@companion-module/base/assets/manifest.schema.json",
+	"id": "arkona-bladerunner",
+	"name": "arkona-bladerunner",
+	"shortname": "BLADE//runner",
+	"description": "Monitor and control Arkona Technologies BLADE//runner frames.",
+	"version": "0.0.0",
+	"license": "MIT",
+	"repository": "git+https://github.com/bitfocus/companion-module-arkona-bladerunner.git",
+	"bugs": "https://github.com/bitfocus/companion-module-arkona-bladerunner/issues",
+	"maintainers": [
+		{
+			"name": "Bitfocus AS",
+			"email": "connections@bitfocus.io"
+		}
+	],
+	"runtime": {
+		"type": "node22",
+		"api": "nodejs-ipc",
+		"apiVersion": "0.0.0",
+		"entrypoint": "../dist/main.js"
+	},
+	"legacyIds": [],
+	"manufacturer": "Arkona Technologies",
+	"products": ["BLADE//runner AT1130"],
+	"keywords": ["video", "audio", "routing", "monitoring", "processing"]
+}
