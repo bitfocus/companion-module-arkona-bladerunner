@@ -58,6 +58,15 @@ export class ClockState {
 
 	clear(): void {
 		this.genlocks.clear()
+		this.ptp = {
+			state: null,
+			mode: null,
+			timeSourcePath: null,
+			offsetNs: null,
+			driftPpm: null,
+			clockSpeedPpm: null,
+			cycleDetected: null,
+		}
 	}
 }
 

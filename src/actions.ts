@@ -498,8 +498,8 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 			],
 			callback: async (event) => {
 				const vm = self.connection.vm
-				if (!vm?.i_o_module) {
-					self.log('warn', 'Cannot route: not connected, or this Blade has no IO module')
+				if (!vm) {
+					self.log('warn', 'Cannot route: not connected to the Blade')
 					return
 				}
 
@@ -713,17 +713,30 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 				},
 			],
 			callback: async (event) => {
-				const rx = self.connection.vm?.r_t_p_receiver
+				const vm = self.connection.vm
+				const rx = vm?.r_t_p_receiver
 				if (!rx) {
 					self.log('warn', 'Cannot clear counters: not connected, or this Blade has no RTP receiver')
 					return
 				}
+				const blocked = writeBlockedReason(self.config.towel, vm)
+				if (blocked) {
+					self.log('warn', `Cannot clear counters: ${blocked}`)
+					return
+				}
 				const match = /^(v|a)_(\d+)$/.exec(String(event.options.receiver))
-				if (!match) return
+				if (!match) {
+					self.log('warn', `Cannot clear counters: receiver '${event.options.receiver}' is invalid`)
+					return
+				}
 				const table = match[1] === 'v' ? rx.video_receivers : rx.audio_receivers
 				const generic = table.row(Number(match[2])).generic
-				await generic.clear_error_counters.write('Click')
-				await generic.clear_event_counters.write('Click')
+				try {
+					await generic.clear_error_counters.write('Click')
+					await generic.clear_event_counters.write('Click')
+				} catch (e: any) {
+					self.log('error', `Failed to clear receiver counters: ${describeWriteError(e)}`)
+				}
 			},
 		},
 

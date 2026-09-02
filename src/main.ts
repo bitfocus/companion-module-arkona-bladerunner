@@ -180,10 +180,19 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 	}
 
 	async configUpdated(config: ModuleConfig, secrets: ModuleSecrets): Promise<void> {
+		if (this.#refreshTimer) clearTimeout(this.#refreshTimer)
+		this.#refreshTimer = null
 		this.io.dispose()
 		await this.connection.disconnect()
+		this.clocks.clear()
+		this.rtp.clear()
+		this.processors.clear()
+		this.issues.clear()
+		this.tableCounts = NO_TABLES
+		this.identifyActive = false
 		this.config = config
 		this.secrets = secrets
+		this.rebuildDefinitions()
 		this.updateStatus(InstanceStatus.Connecting)
 		this.startConnecting()
 	}

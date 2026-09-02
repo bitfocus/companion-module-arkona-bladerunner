@@ -67,6 +67,9 @@ export class BladeConnection {
 	#vm: VAPI.AT1130.Root | null = null
 	#watchers: VScript.Watcher[] = []
 	#retryTimer: NodeJS.Timeout | null = null
+	#connectPromise: Promise<void> | null = null
+	/** Invalidates an in-flight open when a newer connect or disconnect takes ownership. */
+	#connectionGeneration = 0
 	/** Set while `disconnect()` is tearing down, so late socket events are ignored. */
 	#shuttingDown = false
 
@@ -84,8 +87,18 @@ export class BladeConnection {
 	}
 
 	async connect(): Promise<void> {
+		const pending = this.#openAndDiscover()
+		const tracked = pending.finally(() => {
+			if (this.#connectPromise === tracked) this.#connectPromise = null
+		})
+		this.#connectPromise = tracked
+		await tracked
+	}
+
+	async #openAndDiscover(): Promise<void> {
 		this.#clearRetry()
 		this.#shuttingDown = false
+		const generation = ++this.#connectionGeneration
 
 		const config = this.#self.config
 		if (!config.host) {
@@ -103,12 +116,22 @@ export class BladeConnection {
 				protocol: config.protocol,
 				towel: config.towel || undefined,
 				login: config.username ? { user: config.username, password: this.#self.secrets.password } : null,
-				event_handler: (ev) => this.#onSocketEvent(ev),
+				event_handler: (ev) => {
+					if (generation === this.#connectionGeneration) this.#onSocketEvent(ev)
+				},
 			})
 		} catch (e: any) {
+			if (generation !== this.#connectionGeneration) return
 			this.#self.log('error', `Connection to ${config.host} failed: ${e?.message ?? e}`)
 			this.#self.updateStatus(InstanceStatus.ConnectionFailure, e?.message ?? 'Connection failed')
 			this.#scheduleRetry()
+			return
+		}
+
+		// VAPI.open cannot be cancelled. A config update may have started another connection while
+		// this one was resolving, in which case this VM must never become the action target.
+		if (generation !== this.#connectionGeneration) {
+			await vm.close().catch(() => undefined)
 			return
 		}
 
@@ -146,7 +169,9 @@ export class BladeConnection {
 
 	async disconnect(): Promise<void> {
 		this.#shuttingDown = true
+		this.#connectionGeneration++
 		this.#clearRetry()
+		const pending = this.#connectPromise
 
 		for (const watcher of this.#watchers) {
 			try {
@@ -163,6 +188,10 @@ export class BladeConnection {
 			// close() clears our towel, aborts vscript's reconnect loop and drops all listeners.
 			await vm.close().catch((e: any) => this.#self.log('debug', `Error closing socket: ${e?.message ?? e}`))
 		}
+
+		// Closing the VM makes discovery reads settle, but wait until their handlers have unwound so
+		// they cannot repopulate state after configUpdated clears the previous device's topology.
+		await pending?.catch(() => undefined)
 	}
 
 	#onSocketEvent(ev: VScript.DataViews.VSocketEvent): void {

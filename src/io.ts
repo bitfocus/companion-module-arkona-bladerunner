@@ -572,5 +572,6 @@ export class IoManager {
 		this.#disposePortWatchers()
 		this.#disposeDirectionWatchers()
 		this.state.clear()
+		this.state.bncs.clear()
 	}
 }

@@ -49,6 +49,21 @@ describe('toPpm', () => {
 	})
 })
 
+describe('ClockState.clear', () => {
+	it('removes all device-derived clock state', () => {
+		const state = new ClockState()
+		state.genlocks.set(0, { index: 0, name: 'Old Genlock', timeSourcePath: 'old', offsetNs: 12 })
+		state.ptp.state = 'CalibratedAndLocked'
+		state.ptp.offsetNs = 42
+
+		state.clear()
+
+		expect(state.genlocks.size).toBe(0)
+		expect(state.ptp.state).toBeNull()
+		expect(state.ptp.offsetNs).toBeNull()
+	})
+})
+
 describe('time source choices', () => {
 	const state = new ClockState()
 	state.genlocks.set(0, { index: 0, name: 'Genlock #0', timeSourcePath: PTP_CLOCK_OUTPUT, offsetNs: 0 })
