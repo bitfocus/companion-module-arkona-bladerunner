@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { IoState, type SdiInputState, type SdiOutputState } from '../io.js'
-import { applyNodeName, ProcessorState } from '../processors.js'
+import { ProcessorState, type ProcessorInput } from '../processors.js'
 import { RtpState } from '../rtp.js'
 import {
 	buildRegistry,
@@ -15,11 +15,11 @@ import {
 	sourceIdForPath,
 	allGeneratorSources,
 	isSelfLoop,
-	processorOutputId,
 	isBreakaway,
 	levelsForOption,
 	resolveDestinationWriter,
 	resolveSourceEssence,
+	sourceChannelOption,
 } from '../routing.js'
 
 const noRtp = (): RtpState => new RtpState()
@@ -79,28 +79,30 @@ function chassis(): IoState {
 
 describe('sourceIdForPath', () => {
 	it('maps an SDI input essence path to its source ID, per level', () => {
-		expect(sourceIdForPath('i_o_module.input[3].sdi.output.video', 'video')).toBe('sdi_in_3')
-		expect(sourceIdForPath('i_o_module.input[10].sdi.output.video', 'video')).toBe('sdi_in_10')
-		expect(sourceIdForPath('i_o_module.input[3].sdi.output.audio', 'audio')).toBe('sdi_in_3')
+		expect(sourceIdForPath('i_o_module.input[3].sdi.output.video', 'video', new ProcessorState())).toBe('sdi_in_3')
+		expect(sourceIdForPath('i_o_module.input[10].sdi.output.video', 'video', new ProcessorState())).toBe('sdi_in_10')
+		expect(sourceIdForPath('i_o_module.input[3].sdi.output.audio', 'audio', new ProcessorState())).toBe('sdi_in_3')
 	})
 
 	// One source ID addresses both levels, but a path still belongs to exactly one of them.
 	it('does not accept an audio path as a video source, or the reverse', () => {
-		expect(sourceIdForPath('i_o_module.input[3].sdi.output.audio', 'video')).toBeNull()
-		expect(sourceIdForPath('i_o_module.input[3].sdi.output.video', 'audio')).toBeNull()
+		expect(sourceIdForPath('i_o_module.input[3].sdi.output.audio', 'video', new ProcessorState())).toBeNull()
+		expect(sourceIdForPath('i_o_module.input[3].sdi.output.video', 'audio', new ProcessorState())).toBeNull()
 	})
 
 	// Routing to a mixer output is legal on the device but outside this pass's scope. Reporting it
 	// as some SDI input would hand the router an ID its own route action cannot accept.
 	it('returns null for a source outside the SDI scope, rather than guessing', () => {
 		// MADI inputs are real audio essences on the device but are not registered as sources yet.
-		expect(sourceIdForPath('i_o_module.input[0].madi.output', 'audio')).toBeNull()
-		expect(sourceIdForPath('audio_signal_generator.genlock[0].f96000.signal_400hz', 'audio')).toBeNull()
+		expect(sourceIdForPath('i_o_module.input[0].madi.output', 'audio', new ProcessorState())).toBeNull()
+		expect(
+			sourceIdForPath('audio_signal_generator.genlock[0].f96000.signal_400hz', 'audio', new ProcessorState()),
+		).toBeNull()
 	})
 
 	it('returns null for no source', () => {
-		expect(sourceIdForPath(null, 'video')).toBeNull()
-		expect(sourceIdForPath('', 'audio')).toBeNull()
+		expect(sourceIdForPath(null, 'video', new ProcessorState())).toBeNull()
+		expect(sourceIdForPath('', 'audio', new ProcessorState())).toBeNull()
 	})
 })
 
@@ -190,11 +192,20 @@ describe('buildRegistry', () => {
 		expect(destination?.active.video.label).toBe('UDX #0')
 	})
 
-	// Now that processors are endpoints, a destination fed from one reports a routable ID.
+	// Now that processors are endpoints, a destination fed from one reports a routable ID - but only
+	// for an output discovery actually registered, since that is what makes it a source.
 	it('resolves a processor output feeding an SDI destination', () => {
 		const io = new IoState()
 		io.outputs.set(8, output(8, 'video_mixer.instances[0].output', 'Mixer #0'))
-		const destination = buildRegistry(flowState(io, noRtp())).destinations.get('sdi_out_8')
+		const processors = new ProcessorState()
+		processors.addOutput({
+			id: 'mixer_0_out',
+			node: 'mixer_0',
+			suffix: ' Output',
+			level: 'video',
+			path: 'video_mixer.instances[0].output',
+		})
+		const destination = buildRegistry(flowState(io, noRtp(), processors)).destinations.get('sdi_out_8')
 		expect(destination?.active.video.sourceId).toBe('mixer_0_out')
 	})
 
@@ -272,7 +283,7 @@ describe('resolving a port that does not exist', () => {
 
 	it('refuses IDs outside the registry', () => {
 		const registry = buildRegistry(flowState(chassis(), noRtp()))
-		expect(resolveDestinationWriter(vm, registry, 'sdi_out_99')).toBeNull()
+		expect(resolveDestinationWriter(vm, registry, 'sdi_out_99', new ProcessorState())).toBeNull()
 		expect(resolveSourceEssence(registry, 'sdi_in_99', 'video', revive)).toBeNull()
 		expect(resolveSourceEssence(registry, 'nonsense', 'audio', revive)).toBeNull()
 	})
@@ -346,13 +357,13 @@ describe('generator source IDs', () => {
 
 	it('round-trip from a routed path back to the source ID', () => {
 		for (const generator of allGeneratorSources()) {
-			expect(sourceIdForPath(generator.path, generator.levels[0])).toBe(generator.id)
+			expect(sourceIdForPath(generator.path, generator.levels[0], new ProcessorState())).toBe(generator.id)
 		}
 	})
 
 	it('do not resolve on the wrong level', () => {
-		expect(sourceIdForPath('video_signal_generator.instances[0].output', 'audio')).toBeNull()
-		expect(sourceIdForPath('audio_signal_generator.alsa[0].output', 'video')).toBeNull()
+		expect(sourceIdForPath('video_signal_generator.instances[0].output', 'audio', new ProcessorState())).toBeNull()
+		expect(sourceIdForPath('audio_signal_generator.alsa[0].output', 'video', new ProcessorState())).toBeNull()
 	})
 })
 
@@ -414,10 +425,16 @@ describe('RTP endpoints', () => {
 	})
 
 	it('maps receiver essence paths back to their IDs, per level', () => {
-		expect(sourceIdForPath('r_t_p_receiver.video_receivers[0].media_specific.output.video', 'video')).toBe('rtp_rx_v_0')
-		expect(sourceIdForPath('r_t_p_receiver.audio_receivers[1].media_specific.output', 'audio')).toBe('rtp_rx_a_1')
+		expect(
+			sourceIdForPath('r_t_p_receiver.video_receivers[0].media_specific.output.video', 'video', new ProcessorState()),
+		).toBe('rtp_rx_v_0')
+		expect(
+			sourceIdForPath('r_t_p_receiver.audio_receivers[1].media_specific.output', 'audio', new ProcessorState()),
+		).toBe('rtp_rx_a_1')
 		// A video receiver path is not an audio source.
-		expect(sourceIdForPath('r_t_p_receiver.video_receivers[0].media_specific.output.video', 'audio')).toBeNull()
+		expect(
+			sourceIdForPath('r_t_p_receiver.video_receivers[0].media_specific.output.video', 'audio', new ProcessorState()),
+		).toBeNull()
 	})
 
 	it('keeps the audio and video transmitter ID namespaces separate', () => {
@@ -487,13 +504,13 @@ describe('destination writers', () => {
 	} as any
 
 	it('gives an SDI output both levels', () => {
-		const writer = resolveDestinationWriter(vm, registry, 'sdi_out_8')
+		const writer = resolveDestinationWriter(vm, registry, 'sdi_out_8', new ProcessorState())
 		expect(typeof writer?.video).toBe('function')
 		expect(typeof writer?.audio).toBe('function')
 	})
 
 	it('gives an RTP video transmitter both levels', () => {
-		const writer = resolveDestinationWriter(vm, registry, 'rtp_tx_v_0')
+		const writer = resolveDestinationWriter(vm, registry, 'rtp_tx_v_0', new ProcessorState())
 		expect(typeof writer?.video).toBe('function')
 		expect(typeof writer?.audio).toBe('function')
 	})
@@ -501,7 +518,7 @@ describe('destination writers', () => {
 	// An audio streamer has nothing to write video to, so the level must be absent rather than
 	// present-and-failing at the device.
 	it('gives an RTP audio transmitter audio only', () => {
-		const writer = resolveDestinationWriter(vm, registry, 'rtp_tx_a_1')
+		const writer = resolveDestinationWriter(vm, registry, 'rtp_tx_a_1', new ProcessorState())
 		expect(writer?.video).toBeUndefined()
 		expect(typeof writer?.audio).toBe('function')
 	})
@@ -518,76 +535,75 @@ describe('destination writers', () => {
 			audioSourcePath: null,
 			audioSourceName: null,
 		})
-		const writer = resolveDestinationWriter(vm, buildRegistry(flowState(chassis(), rtp)), 'rtp_tx_v_0')
+		const writer = resolveDestinationWriter(
+			vm,
+			buildRegistry(flowState(chassis(), rtp)),
+			'rtp_tx_v_0',
+			new ProcessorState(),
+		)
 		expect(typeof writer?.video).toBe('function')
 		expect(writer?.audio).toBeUndefined()
 	})
 
 	it('refuses an unknown destination', () => {
-		expect(resolveDestinationWriter(vm, registry, 'nonsense')).toBeNull()
+		expect(resolveDestinationWriter(vm, registry, 'nonsense', new ProcessorState())).toBeNull()
 	})
 })
 
 describe('processors as flow endpoints', () => {
 	function withProcessors(): ProcessorState {
 		const p = new ProcessorState()
-		p.inputs.set('mixer_0_a', {
-			id: 'mixer_0_a',
-			label: 'Mixer 0 A',
-			node: 'mixer_0',
-			suffix: '',
-			level: 'video',
+		for (const [node, name] of [
+			['mixer_0', 'Mixer 0'],
+			['delay_0', 'Delay 0'],
+			['audio_delay_0', 'Audio Delay 0'],
+		]) {
+			p.nodeNames.set(node, name)
+		}
+		const input = (id: string, node: string, suffix: string, rest: Partial<ProcessorInput> = {}) =>
+			p.inputs.set(id, {
+				id,
+				node,
+				suffix,
+				takesChannel: false,
+				write: async () => undefined,
+				level: 'video',
+				sourcePath: null,
+				sourceName: null,
+				sourceChannel: null,
+				...rest,
+			})
+
+		input('mixer_0_a', 'mixer_0', ' A', {
 			sourcePath: 'i_o_module.input[1].sdi.output.video',
 			sourceName: 'SDI Input 1',
 		})
-		p.inputs.set('mixer_0_b', {
-			id: 'mixer_0_b',
-			label: 'Mixer 0 B',
-			node: 'mixer_0',
-			suffix: '',
-			level: 'video',
-			sourcePath: null,
-			sourceName: null,
-		})
-		p.inputs.set('delay_0_in_0', {
-			id: 'delay_0_in_0',
-			label: 'Delay 0 In 0',
-			node: 'delay_0',
-			suffix: '',
-			level: 'video',
-			sourcePath: null,
-			sourceName: null,
-		})
-		p.inputs.set('audio_delay_0_in', {
-			id: 'audio_delay_0_in',
-			label: 'Audio Delay 0 In',
-			node: 'audio_delay_0',
-			suffix: '',
+		input('mixer_0_b', 'mixer_0', ' B')
+		input('delay_0_in_0', 'delay_0', ' In 0')
+		input('audio_delay_0_in', 'audio_delay_0', ' In', {
 			level: 'audio',
 			sourcePath: 'i_o_module.input[1].sdi.output.audio',
 			sourceName: 'SDI Input 1 Audio',
 		})
-		p.outputs.set('audio_delay_0_out_0', {
+
+		p.addOutput({
 			id: 'audio_delay_0_out_0',
-			label: 'Audio Delay 0 Out 0',
 			node: 'audio_delay_0',
-			suffix: '',
+			suffix: ' Out 0',
 			level: 'audio',
 			path: 're_play.audio.delays[0].outputs[0].audio',
 		})
-		p.outputs.set('mixer_0_out', {
+		p.addOutput({
 			id: 'mixer_0_out',
-			label: 'Mixer 0 Output',
 			node: 'mixer_0',
-			suffix: '',
+			suffix: ' Output',
 			level: 'video',
 			path: 'video_mixer.instances[0].output',
 		})
-		p.outputs.set('delay_0_out_0', {
+		p.addOutput({
 			id: 'delay_0_out_0',
-			label: 'Delay 0 Out 0',
 			node: 'delay_0',
-			suffix: '',
+			suffix: ' Out 0',
 			level: 'video',
 			path: 're_play.video.delays[0].outputs[0].video',
 		})
@@ -629,6 +645,30 @@ describe('processors as flow endpoints', () => {
 		expect(isBreakaway(registry().destinations.get('audio_delay_0_in'))).toBe(false)
 	})
 
+	it('marks only a shuffler input as taking a source channel', () => {
+		const p = withProcessors()
+		p.nodeNames.set('shuffler_0', 'Shuffler 0')
+		p.inputs.set('shuffler_0_in_0', {
+			id: 'shuffler_0_in_0',
+			node: 'shuffler_0',
+			suffix: ' In 0',
+			takesChannel: true,
+			write: async () => undefined,
+			level: 'audio',
+			sourcePath: 'i_o_module.input[1].sdi.output.audio',
+			sourceName: 'SDI Input 1 ch 3',
+			sourceChannel: 3,
+		})
+		const r = buildRegistry(flowState(chassis(), noRtp(), p))
+		expect(sourceChannelOption(r).isVisibleData?.channelDestinations).toEqual(['shuffler_0_in_0'])
+		expect(r.destinations.get('shuffler_0_in_0')?.active.audio.channel).toBe(3)
+		expect(r.destinations.get('delay_0_in_0')?.takesChannel).toBe(false)
+
+		const ids = new Set(FlowVariableDefinitions(r).map((v) => v.variableId))
+		expect(ids.has('dest_shuffler_0_in_0_audio_active_source_channel')).toBe(true)
+		expect(ids.has('dest_delay_0_in_0_video_active_source_channel')).toBe(false)
+	})
+
 	it('defines variables only for the levels a processor carries', () => {
 		const ids = new Set(FlowVariableDefinitions(registry()).map((v) => v.variableId))
 		expect(ids.has('dest_delay_0_in_0_video_active_source')).toBe(true)
@@ -656,24 +696,64 @@ describe('processors as flow endpoints', () => {
 	})
 })
 
+// The write that applies a route is captured by discovery, where the keyword's shape is known, so
+// the only thing left to check here is that the destination hands its own write back.
+describe('processor destination writers', () => {
+	function stateWithInput(write: ProcessorInput['write']): ProcessorState {
+		const p = new ProcessorState()
+		p.nodeNames.set('gain_0', 'Audio Gain 0')
+		p.inputs.set('gain_0_in', {
+			id: 'gain_0_in',
+			node: 'gain_0',
+			suffix: ' In',
+			takesChannel: false,
+			level: 'audio',
+			write,
+			sourcePath: null,
+			sourceName: null,
+			sourceChannel: null,
+		})
+		return p
+	}
+
+	it('routes a processor input through the write discovery built for it', async () => {
+		const applied: Array<[unknown, number]> = []
+		const p = stateWithInput(async (essence, channel) => void applied.push([essence, channel]))
+		const registry = buildRegistry(flowState(chassis(), noRtp(), p))
+		const writer = resolveDestinationWriter({} as any, registry, 'gain_0_in', p)
+		// Only the level the input carries, so an audio-only input never offers a video write.
+		expect(writer?.video).toBeUndefined()
+		await writer!.audio!({ kind: 'essence' } as any, 3)
+		expect(applied).toEqual([[{ kind: 'essence' }, 3]])
+	})
+
+	it('refuses a processor input the device no longer has', () => {
+		const p = stateWithInput(async () => undefined)
+		const registry = buildRegistry(flowState(chassis(), noRtp(), p))
+		p.inputs.delete('gain_0_in')
+		expect(resolveDestinationWriter({} as any, registry, 'gain_0_in', p)).toBeNull()
+	})
+})
+
 // A rename on the device must reach every label built from the node's name, and through them the
 // choices and the `src_label_*`/`dst_label_*` variables.
-describe('applyNodeName', () => {
+describe('node renames', () => {
 	function delayState(): ProcessorState {
 		const p = new ProcessorState()
 		p.nodeNames.set('delay_0', 'Delay 0')
 		p.inputs.set('delay_0_in_0', {
 			id: 'delay_0_in_0',
-			label: 'Delay 0 In 0',
 			node: 'delay_0',
 			suffix: ' In 0',
+			takesChannel: false,
+			write: async () => undefined,
 			level: 'video',
 			sourcePath: null,
 			sourceName: null,
+			sourceChannel: null,
 		})
-		p.outputs.set('delay_0_out_0', {
+		p.addOutput({
 			id: 'delay_0_out_0',
-			label: 'Delay 0 Out 0',
 			node: 'delay_0',
 			suffix: ' Out 0',
 			level: 'video',
@@ -684,17 +764,12 @@ describe('applyNodeName', () => {
 
 	it('relabels every input and output on the renamed node', () => {
 		const p = delayState()
-		expect(applyNodeName(p, 'delay_0', 'ISO 1')).toBe(true)
-		expect(p.inputs.get('delay_0_in_0')?.label).toBe('ISO 1 In 0')
-		expect(p.outputs.get('delay_0_out_0')?.label).toBe('ISO 1 Out 0')
+		p.nodeNames.set('delay_0', 'ISO 1')
 
 		const r = buildRegistry(flowState(chassis(), noRtp(), p))
 		expect(r.destinations.get('delay_0_in_0')?.label).toBe('ISO 1 In 0')
+		expect(r.sources.get('delay_0_out_0')?.label).toBe('ISO 1 Out 0')
 		expect(flowRegistryValues(r)['src_label_delay_0_out_0']).toBe('ISO 1 Out 0')
-	})
-
-	it('reports no change when the name is the same', () => {
-		expect(applyNodeName(delayState(), 'delay_0', 'Delay 0')).toBe(false)
 	})
 
 	it('leaves other nodes alone', () => {
@@ -702,15 +777,17 @@ describe('applyNodeName', () => {
 		p.nodeNames.set('mixer_0', 'Mixer 0')
 		p.inputs.set('mixer_0_a', {
 			id: 'mixer_0_a',
-			label: 'Mixer 0 A',
 			node: 'mixer_0',
 			suffix: ' A',
+			takesChannel: false,
+			write: async () => undefined,
 			level: 'video',
 			sourcePath: null,
 			sourceName: null,
+			sourceChannel: null,
 		})
-		applyNodeName(p, 'delay_0', 'ISO 1')
-		expect(p.inputs.get('mixer_0_a')?.label).toBe('Mixer 0 A')
+		p.nodeNames.set('delay_0', 'ISO 1')
+		expect(buildRegistry(flowState(chassis(), noRtp(), p)).destinations.get('mixer_0_a')?.label).toBe('Mixer 0 A')
 	})
 })
 
@@ -718,42 +795,46 @@ describe('isSelfLoop', () => {
 	const p = new ProcessorState()
 	p.inputs.set('mixer_0_a', {
 		id: 'mixer_0_a',
-		label: 'A',
 		node: 'mixer_0',
 		suffix: '',
+		takesChannel: false,
+		write: async () => undefined,
 		level: 'video',
 		sourcePath: null,
 		sourceName: null,
+		sourceChannel: null,
 	})
 	p.inputs.set('mixer_1_a', {
 		id: 'mixer_1_a',
-		label: 'A',
 		node: 'mixer_1',
 		suffix: '',
+		takesChannel: false,
+		write: async () => undefined,
 		level: 'video',
 		sourcePath: null,
 		sourceName: null,
+		sourceChannel: null,
 	})
 	p.inputs.set('delay_0_in_0', {
 		id: 'delay_0_in_0',
-		label: 'In',
 		node: 'delay_0',
 		suffix: '',
+		takesChannel: false,
+		write: async () => undefined,
 		level: 'video',
 		sourcePath: null,
 		sourceName: null,
+		sourceChannel: null,
 	})
-	p.outputs.set('mixer_0_out', {
+	p.addOutput({
 		id: 'mixer_0_out',
-		label: 'Out',
 		node: 'mixer_0',
 		suffix: '',
 		level: 'video',
 		path: 'video_mixer.instances[0].output',
 	})
-	p.outputs.set('delay_0_out_0', {
+	p.addOutput({
 		id: 'delay_0_out_0',
-		label: 'Out',
 		node: 'delay_0',
 		suffix: '',
 		level: 'video',
@@ -783,26 +864,38 @@ describe('isSelfLoop', () => {
 	})
 })
 
-describe('processorOutputId', () => {
-	// A route from a processor is applied by path, and the tally has to turn that path back into the
-	// same ID the registry uses - otherwise the route works but reports nothing.
-	it('maps every processor output path to its registered ID', () => {
-		expect(processorOutputId('video_mixer.instances[0].output')).toBe('mixer_0_out')
-		expect(processorOutputId('re_play.video.delays[0].outputs[1].video')).toBe('delay_0_out_1')
-		expect(processorOutputId('re_play.video.players[2].output.video')).toBe('player_2_out')
-		expect(processorOutputId('re_play.audio.delays[1].outputs[0].audio')).toBe('audio_delay_1_out_0')
+// A route from a processor is applied by path, and the tally has to turn that path back into the
+// same ID the registry uses - otherwise the route works but reports nothing. Discovery registers
+// both halves at once, so the lookup cannot drift from what was registered.
+describe('resolving a processor output path', () => {
+	const processors = new ProcessorState()
+	processors.addOutput({
+		id: 'mixer_1_out',
+		node: 'mixer_1',
+		suffix: ' Output',
+		level: 'video',
+		path: 'video_mixer.instances[1].output',
+	})
+	processors.addOutput({
+		id: 'audio_delay_1_out_0',
+		node: 'audio_delay_1',
+		suffix: ' Out 0',
+		level: 'audio',
+		path: 're_play.audio.delays[1].outputs[0].audio',
 	})
 
-	it('ignores anything that is not a processor output', () => {
-		expect(processorOutputId('i_o_module.input[0].sdi.output.video')).toBeNull()
-		expect(processorOutputId('video_mixer.instances[0].v_src0')).toBeNull()
+	it('maps a registered output path back to its ID', () => {
+		expect(sourceIdForPath('video_mixer.instances[1].output', 'video', processors)).toBe('mixer_1_out')
+		expect(sourceIdForPath('re_play.audio.delays[1].outputs[0].audio', 'audio', processors)).toBe('audio_delay_1_out_0')
 	})
 
-	it('round-trips through sourceIdForPath on the video level', () => {
-		expect(sourceIdForPath('video_mixer.instances[1].output', 'video')).toBe('mixer_1_out')
-		// A processor output resolves on its own level only.
-		expect(sourceIdForPath('video_mixer.instances[1].output', 'audio')).toBeNull()
-		expect(sourceIdForPath('re_play.audio.delays[1].outputs[0].audio', 'audio')).toBe('audio_delay_1_out_0')
-		expect(sourceIdForPath('re_play.audio.delays[1].outputs[0].audio', 'video')).toBeNull()
+	// An audio path is not a video source, whatever produced it.
+	it('resolves an output on its own level only', () => {
+		expect(sourceIdForPath('video_mixer.instances[1].output', 'audio', processors)).toBeNull()
+		expect(sourceIdForPath('re_play.audio.delays[1].outputs[0].audio', 'video', processors)).toBeNull()
+	})
+
+	it('ignores a path no processor produced', () => {
+		expect(sourceIdForPath('video_mixer.instances[0].v_src0', 'video', processors)).toBeNull()
 	})
 })

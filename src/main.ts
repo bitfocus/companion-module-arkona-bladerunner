@@ -90,8 +90,8 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 			...FlowVariableDefinitions(registry),
 			...ClockVariableDefinitions(this.clocks),
 		])
-		UpdateActions(this)
-		UpdateFeedbacks(this)
+		UpdateActions(this, registry)
+		UpdateFeedbacks(this, registry)
 		UpdatePresets(this)
 
 		// Definitions and values are published separately, and a value set before its definition
@@ -125,6 +125,9 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 				const variable = activeSourceVariable(destination.id, level)
 				this.variables.set(variable, destination.active[level].sourceId ?? '')
 				this.variables.set(`${variable}_label`, destination.active[level].label ?? '')
+				if (destination.takesChannel) {
+					this.variables.set(`${variable}_channel`, destination.active[level].channel ?? '')
+				}
 			}
 			if (destination.levels.length > 1) {
 				this.variables.set(`dest_${destination.id}_breakaway`, String(isBreakaway(destination)))

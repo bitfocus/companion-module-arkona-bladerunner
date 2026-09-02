@@ -539,7 +539,7 @@ export class IoManager {
 
 		// The router contract: this value must be exactly what the route action would accept, so a
 		// source outside the current SDI scope publishes empty, not a guess.
-		batcher.set(variable, sourceIdForPath(path, level) ?? '')
+		batcher.set(variable, sourceIdForPath(path, level, self.processors) ?? '')
 		batcher.set(
 			`dest_${destination}_breakaway`,
 			String(isBreakaway(buildRegistry(self.flowState).destinations.get(destination))),

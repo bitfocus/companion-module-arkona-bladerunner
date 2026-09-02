@@ -5,6 +5,8 @@ import { canSetDirection, type BncDirection } from './io.js'
 import type { ModuleInstance } from './main.js'
 import {
 	buildRegistry,
+	type FlowRegistry,
+	sourceChannelOption,
 	destinationChoices,
 	levelsForOption,
 	NO_SOURCE,
@@ -21,11 +23,10 @@ import { describeWriteError, writeBlockedReason } from './vm.js'
  * Action definitions depend on which BNCs exist and which of them are reversible, so this is
  * rebuilt after every discovery rather than once at init.
  */
-export function UpdateActions(self: ModuleInstance): void {
+export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): void {
 	const bncChoices = self.io.state.reversibleBncChoices()
 	const firstBnc = bncChoices[0]?.id ?? 0
 
-	const registry = buildRegistry(self.flowState)
 	const sources = sourceChoices(registry)
 	const destinations = destinationChoices(registry)
 	const outputChoices = self.io.state.outputChoices()
@@ -38,7 +39,7 @@ export function UpdateActions(self: ModuleInstance): void {
 		route: {
 			name: 'Flows - Route Source To Destination',
 			description:
-				'Route an SDI source to an SDI destination, or clear it. Video and audio are separate levels and can be routed together or independently.',
+				'Route a source to a destination, or clear it. Video and audio are separate levels and can be routed together or independently.',
 			options: [
 				{ id: 'source', type: 'dropdown', label: 'Source', default: NO_SOURCE, choices: sources },
 				{
@@ -49,6 +50,7 @@ export function UpdateActions(self: ModuleInstance): void {
 					choices: destinations,
 				},
 				{ id: 'level', type: 'dropdown', label: 'Level', default: 'both', choices: ROUTE_LEVEL_CHOICES },
+				sourceChannelOption(registry),
 			],
 			callback: async (event) => {
 				const vm = self.connection.vm
@@ -68,7 +70,7 @@ export function UpdateActions(self: ModuleInstance): void {
 				const live = buildRegistry(self.flowState)
 
 				const destinationKey = String(event.options.destination)
-				const writer = resolveDestinationWriter(vm, live, destinationKey)
+				const writer = resolveDestinationWriter(vm, live, destinationKey, self.processors)
 				if (!writer) {
 					self.log('warn', `Cannot route: destination '${destinationKey}' does not exist on this Blade`)
 					return
@@ -128,6 +130,8 @@ export function UpdateActions(self: ModuleInstance): void {
 					self.log('warn', `Cannot route: ${why}`)
 					return
 				}
+				// Only a channel-selecting destination reads this; everything else takes the whole essence.
+				const sourceChannel = Number(event.options.source_channel ?? 0)
 				const succeeded: FlowLevel[] = []
 				const failed: string[] = []
 
@@ -139,7 +143,7 @@ export function UpdateActions(self: ModuleInstance): void {
 						// The writer knows how each destination kind applies a level: an SDI output's video
 						// goes through set_video_source, which waits for the output to actually carry the
 						// source, while everything else is a plain TimedSource write.
-						await writer[level]!(essence)
+						await writer[level]!(essence, sourceChannel)
 						succeeded.push(level)
 					} catch (e: any) {
 						failed.push(`${level}: ${describeWriteError(e)}`)

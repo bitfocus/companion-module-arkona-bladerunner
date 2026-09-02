@@ -2,7 +2,7 @@ import type * as VAPI from 'vapi'
 import type * as VScript from 'vscript'
 import type { ModuleInstance } from './main.js'
 import { activeSourceVariable, sourceIdForPath, type FlowLevel } from './routing.js'
-import { watchAll, watchKeyword, watchRowName as watchNamedRowName, type NamedRow } from './watch.js'
+import { watchAll, watchKeyword, watchRowName } from './watch.js'
 
 /** An RTP receiver, which is a routing source. */
 export interface RtpReceiverState {
@@ -64,11 +64,6 @@ export function transportEmbedsAudio(variant: string | null | undefined): boolea
 	return variant === 'ST2022_6'
 }
 
-/** A transmitter row name is often blank; fall back to something that still identifies the row. */
-function endpointName(name: string, fallback: string): string {
-	return name.trim() === '' ? fallback : name
-}
-
 export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): Promise<void> {
 	const state = self.rtp
 	const rx = vm.r_t_p_receiver
@@ -93,26 +88,32 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 
 	for (const i of videoRx) {
 		state.videoReceivers.set(i, { index: i, name: `RTP Video Rx ${i}` })
-		await watchRowName(
-			self,
-			`rtp_rx_v_${i}`,
-			rx!.video_receivers.row(i),
-			(name) => {
-				state.videoReceivers.get(i)!.name = endpointName(name, `RTP Video Rx ${i}`)
-			},
-			collect,
+		pending.push(
+			watchRowName(
+				self,
+				`rtp_rx_v_${i}`,
+				rx!.video_receivers.row(i),
+				`RTP Video Rx ${i}`,
+				(name) => {
+					state.videoReceivers.get(i)!.name = name
+				},
+				collect,
+			),
 		)
 	}
 	for (const i of audioRx) {
 		state.audioReceivers.set(i, { index: i, name: `RTP Audio Rx ${i}` })
-		await watchRowName(
-			self,
-			`rtp_rx_a_${i}`,
-			rx!.audio_receivers.row(i),
-			(name) => {
-				state.audioReceivers.get(i)!.name = endpointName(name, `RTP Audio Rx ${i}`)
-			},
-			collect,
+		pending.push(
+			watchRowName(
+				self,
+				`rtp_rx_a_${i}`,
+				rx!.audio_receivers.row(i),
+				`RTP Audio Rx ${i}`,
+				(name) => {
+					state.audioReceivers.get(i)!.name = name
+				},
+				collect,
+			),
 		)
 	}
 
@@ -138,15 +139,7 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 			audioSourceName: null,
 		}
 		state.videoTransmitters.set(i, entry)
-		await watchRowName(
-			self,
-			`rtp_tx_v_${i}`,
-			row,
-			(name) => {
-				entry.name = endpointName(name, `RTP Video Tx ${i}`)
-			},
-			collect,
-		)
+		pending.push(watchRowName(self, `rtp_tx_v_${i}`, row, `RTP Video Tx ${i}`, (name) => (entry.name = name), collect))
 		pending.push(watchTally(self, `rtp_tx_v_${i}`, 'video', row.v_src.status, entry, batcher, collect))
 		// Only worth watching where the format actually carries audio.
 		if (entry.embedsAudio) {
@@ -167,15 +160,7 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 			audioSourceName: null,
 		}
 		state.audioTransmitters.set(i, entry)
-		await watchRowName(
-			self,
-			`rtp_tx_a_${i}`,
-			row,
-			(name) => {
-				entry.name = endpointName(name, `RTP Audio Tx ${i}`)
-			},
-			collect,
-		)
+		pending.push(watchRowName(self, `rtp_tx_a_${i}`, row, `RTP Audio Tx ${i}`, (name) => (entry.name = name), collect))
 		pending.push(watchTally(self, `rtp_tx_a_${i}`, 'audio', row.a_src.status, entry, batcher, collect))
 	}
 
@@ -183,32 +168,6 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 	self.log(
 		'info',
 		`RTP endpoints: ${videoRx.length} video rx, ${audioRx.length} audio rx, ${videoTx.length} video tx, ${audioTx.length} audio tx`,
-	)
-}
-
-/**
- * Follow a row's name.
- *
- * Renaming a stream in the device's web UI has to reach the choices and the label variables, so
- * the name is watched rather than read once - `apply` writes it into the state and the rebuild
- * republishes everything derived from it.
- */
-async function watchRowName(
-	self: ModuleInstance,
-	id: string,
-	row: NamedRow,
-	apply: (name: string) => void,
-	collect: (w: VScript.Watcher) => void,
-): Promise<void> {
-	await watchNamedRowName(
-		self,
-		`${id}.row_name`,
-		row,
-		(name) => {
-			apply(name)
-			self.scheduleDefinitionRefresh()
-		},
-		collect,
 	)
 }
 
@@ -238,7 +197,7 @@ async function watchTally(
 			else entry.audioSourcePath = path
 
 			const variable = activeSourceVariable(destination, level)
-			batcher.set(variable, sourceIdForPath(path, level) ?? '')
+			batcher.set(variable, sourceIdForPath(path, level, self.processors) ?? '')
 			self.checkFeedbacks('flow_routed')
 
 			if (!source) {

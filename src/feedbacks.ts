@@ -5,6 +5,8 @@ import { formatStandard, isLocked, SDI_OUTPUT_ISSUE_LABELS } from './io.js'
 import type { ModuleInstance } from './main.js'
 import {
 	buildRegistry,
+	type FlowRegistry,
+	sourceChannelOption,
 	destinationChoices,
 	isBreakaway,
 	levelsForOption,
@@ -24,7 +26,7 @@ const BLUE = combineRgb(0, 90, 200)
  * Feedback definitions depend on which BNCs are currently inputs and which are outputs, so this is
  * called again after every discovery rather than once at init.
  */
-export function UpdateFeedbacks(self: ModuleInstance): void {
+export function UpdateFeedbacks(self: ModuleInstance, registry: FlowRegistry): void {
 	const inputChoices = self.io.state.inputChoices()
 	const outputChoices = self.io.state.outputChoices()
 	const bncChoices = self.io.state.bncChoices()
@@ -32,7 +34,6 @@ export function UpdateFeedbacks(self: ModuleInstance): void {
 	const firstOutput = outputChoices[0]?.id ?? 0
 	const firstBnc = bncChoices[0]?.id ?? 0
 
-	const registry = buildRegistry(self.flowState)
 	const flowSources = sourceChoices(registry)
 	const flowDestinations = destinationChoices(registry)
 
@@ -87,6 +88,7 @@ export function UpdateFeedbacks(self: ModuleInstance): void {
 					choices: flowDestinations,
 				},
 				{ id: 'level', type: 'dropdown', label: 'Level', default: 'both', choices: ROUTE_LEVEL_CHOICES },
+				sourceChannelOption(registry),
 			],
 			callback: (feedback) => {
 				// Rebuilt per evaluation so the tally reflects the live IoState, not the state as it
@@ -94,12 +96,17 @@ export function UpdateFeedbacks(self: ModuleInstance): void {
 				const destination = buildRegistry(self.flowState).destinations.get(String(feedback.options.destination))
 				if (!destination) return false
 				const wanted = String(feedback.options.source)
+				const wantedChannel = Number(feedback.options.source_channel ?? 0)
 				// "Video + Audio" tallies only when every chosen level agrees, so a breakaway does not
 				// light up as though the whole destination follows one source.
 				return levelsForOption(String(feedback.options.level)).every((level) => {
 					const active = destination.active[level].sourceId
 					// "(none)" is a real state to tally: the level is deliberately cleared.
-					return wanted === NO_SOURCE ? active === null : active === wanted
+					if (wanted === NO_SOURCE) return active === null
+					if (active !== wanted) return false
+					// A shuffler input follows one channel, so the same source on another channel is
+					// not the route that was asked for.
+					return !destination.takesChannel || destination.active[level].channel === wantedChannel
 				})
 			},
 		},

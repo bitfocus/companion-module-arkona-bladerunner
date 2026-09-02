@@ -1,4 +1,4 @@
-import type { CompanionVariableDefinition, DropdownChoice } from '@companion-module/base'
+import type { CompanionInputFieldNumber, CompanionVariableDefinition, DropdownChoice } from '@companion-module/base'
 import type * as VAPI from 'vapi'
 import type { IoState } from './io.js'
 import type { ProcessorState } from './processors.js'
@@ -102,18 +102,24 @@ export interface ActiveSource {
 	/** ID of the source on this level, or null. Always a value `route` would accept. */
 	sourceId: string | null
 	label: string | null
+	/** Which channel of that source, where the destination selects one. */
+	channel: number | null
 }
 
 export interface FlowDestination extends Omit<FlowPort, 'path'> {
 	/** BNC number - the device's own stable port identity, never an array position. */
 	index: number
+	/** Whether a route here selects one channel of the source rather than the whole essence. */
+	takesChannel: boolean
 	active: Record<FlowLevel, ActiveSource>
 }
 
 /** Every level empty, to be spread and then overridden per level a port actually carries. */
-const NO_ACTIVE_SOURCES: Record<FlowLevel, ActiveSource> = {
-	video: { sourceId: null, label: null },
-	audio: { sourceId: null, label: null },
+function noActiveSources(): Record<FlowLevel, ActiveSource> {
+	return {
+		video: { sourceId: null, label: null, channel: null },
+		audio: { sourceId: null, label: null, channel: null },
+	}
 }
 
 export interface FlowRegistry {
@@ -137,7 +143,11 @@ export function destinationId(index: number): string {
  * empty rather than be guessed at, or the router would be handed a source ID that its own route
  * action cannot accept.
  */
-export function sourceIdForPath(path: string | null | undefined, level: FlowLevel): string | null {
+export function sourceIdForPath(
+	path: string | null | undefined,
+	level: FlowLevel,
+	processors: ProcessorState,
+): string | null {
 	if (!path) return null
 	const sdi = SDI_INPUT_PATH[level].exec(path)
 	if (sdi) return sourceId(Number(sdi[1]))
@@ -145,43 +155,13 @@ export function sourceIdForPath(path: string | null | undefined, level: FlowLeve
 	const rtp = RTP_RECEIVER_PATH[level].exec(path)
 	if (rtp) return rtpReceiverId(level, Number(rtp[1]))
 
-	const processor = processorOutputIdForLevel(path, level)
-	if (processor) return processor
+	// Processor outputs are looked up in what discovery registered rather than re-derived from the
+	// path: a second, hand-written mapping could disagree with discovery, and the only symptom
+	// would be a route that applies but tallies as empty.
+	const processor = processors.outputsByPath.get(path)
+	if (processor?.level === level) return processor.id
 
 	return generatorSources(level).find((g) => g.path === path)?.id ?? null
-}
-
-/**
- * Processor outputs, derived from the path rather than looked up in the discovered state.
- *
- * Keeping this pure matters: the tally has to resolve a path back to an ID on every update, and it
- * must produce exactly the ID `subscribeProcessors` registered, or a route from a processor would
- * report an empty tally despite having been applied.
- */
-const PROCESSOR_OUTPUT_PATHS: Array<[FlowLevel, RegExp, (m: RegExpExecArray) => string]> = [
-	['video', /^video_mixer\.instances\[(\d+)\]\.output$/, (m) => `mixer_${m[1]}_out`],
-	['video', /^re_play\.video\.delays\[(\d+)\]\.outputs\[(\d+)\]\.video$/, (m) => `delay_${m[1]}_out_${m[2]}`],
-	['video', /^re_play\.video\.players\[(\d+)\]\.output\.video$/, (m) => `player_${m[1]}_out`],
-	['audio', /^re_play\.audio\.delays\[(\d+)\]\.outputs\[(\d+)\]\.audio$/, (m) => `audio_delay_${m[1]}_out_${m[2]}`],
-]
-
-/** The ID for a processor output path, whatever level it belongs to. */
-export function processorOutputId(path: string): string | null {
-	for (const [, pattern, toId] of PROCESSOR_OUTPUT_PATHS) {
-		const match = pattern.exec(path)
-		if (match) return toId(match)
-	}
-	return null
-}
-
-/** As above, but only when the output carries the level being resolved. */
-function processorOutputIdForLevel(path: string, level: FlowLevel): string | null {
-	for (const [outputLevel, pattern, toId] of PROCESSOR_OUTPUT_PATHS) {
-		if (outputLevel !== level) continue
-		const match = pattern.exec(path)
-		if (match) return toId(match)
-	}
-	return null
 }
 
 /** RTP receivers keep video and audio in separate tables, unlike an SDI port. */
@@ -330,17 +310,20 @@ export function buildRegistry({ io, rtp, processors }: FlowStateSources): FlowRe
 			index: output.index,
 			// An SDI output is a destination on both levels: v_src and a_src are independent.
 			levels: ['video', 'audio'],
+			takesChannel: false,
 			kind: 'sdi',
 			node: null,
 			active: {
 				video: {
-					sourceId: sourceIdForPath(output.videoSourcePath, 'video'),
+					sourceId: sourceIdForPath(output.videoSourcePath, 'video', processors),
 					// Fall back to the raw path so an out-of-scope source is still visible to a human.
 					label: output.videoSourceName ?? output.videoSourcePath ?? null,
+					channel: null,
 				},
 				audio: {
-					sourceId: sourceIdForPath(output.audioSourcePath, 'audio'),
+					sourceId: sourceIdForPath(output.audioSourcePath, 'audio', processors),
 					label: output.audioSourceName ?? output.audioSourcePath ?? null,
+					channel: null,
 				},
 			},
 		})
@@ -351,7 +334,7 @@ export function buildRegistry({ io, rtp, processors }: FlowStateSources): FlowRe
 	for (const output of processors.outputs.values()) {
 		sources.set(output.id, {
 			id: output.id,
-			label: output.label,
+			label: processors.label(output),
 			path: output.path,
 			levels: [output.level],
 			kind: 'processor',
@@ -363,16 +346,18 @@ export function buildRegistry({ io, rtp, processors }: FlowStateSources): FlowRe
 	for (const input of processors.inputs.values()) {
 		destinations.set(input.id, {
 			id: input.id,
-			label: input.label,
+			label: processors.label(input),
 			index: 0,
 			levels: [input.level],
+			takesChannel: input.takesChannel,
 			kind: 'processor',
 			node: input.node,
 			active: {
-				...NO_ACTIVE_SOURCES,
+				...noActiveSources(),
 				[input.level]: {
-					sourceId: sourceIdForPath(input.sourcePath, input.level),
+					sourceId: sourceIdForPath(input.sourcePath, input.level, processors),
 					label: input.sourceName ?? input.sourcePath ?? null,
+					channel: input.sourceChannel,
 				},
 			},
 		})
@@ -388,16 +373,19 @@ export function buildRegistry({ io, rtp, processors }: FlowStateSources): FlowRe
 			index: transmitter.index,
 			// An ST 2110 video flow carries no audio, so it is a video-only destination.
 			levels: transmitter.carriesVideo ? (transmitter.embedsAudio ? ['video', 'audio'] : ['video']) : ['audio'],
+			takesChannel: false,
 			kind: 'rtp_transmitter',
 			node: null,
 			active: {
 				video: {
-					sourceId: sourceIdForPath(transmitter.videoSourcePath, 'video'),
+					sourceId: sourceIdForPath(transmitter.videoSourcePath, 'video', processors),
 					label: transmitter.videoSourceName ?? transmitter.videoSourcePath ?? null,
+					channel: null,
 				},
 				audio: {
-					sourceId: sourceIdForPath(transmitter.audioSourcePath, 'audio'),
+					sourceId: sourceIdForPath(transmitter.audioSourcePath, 'audio', processors),
 					label: transmitter.audioSourceName ?? transmitter.audioSourcePath ?? null,
+					channel: null,
 				},
 			},
 		})
@@ -424,6 +412,28 @@ export function sourceChoices(registry: FlowRegistry): DropdownChoice[] {
 			label: s.levels.length === 1 ? `${s.label} [${s.levels[0]} only]` : s.label,
 		})),
 	]
+}
+
+/**
+ * The "which channel of the source" field, shared by the route action and its feedback so the two
+ * cannot disagree about when it applies.
+ *
+ * It is shown only for the destinations that are fed one channel at a time - an audio shuffler
+ * input - which is a property of the registry, hence `isVisibleData` rather than an expression.
+ */
+export function sourceChannelOption(registry: FlowRegistry): CompanionInputFieldNumber {
+	const channelDestinations = [...registry.destinations.values()].filter((d) => d.takesChannel).map((d) => d.id)
+	return {
+		id: 'source_channel',
+		type: 'number',
+		label: 'Source Channel',
+		tooltip: 'Which audio channel of the source. Only used by destinations fed one channel at a time.',
+		default: 0,
+		min: 0,
+		max: 255,
+		isVisible: (options, data) => (data.channelDestinations as string[]).includes(String(options.destination)),
+		isVisibleData: { channelDestinations },
+	}
 }
 
 export function destinationChoices(registry: FlowRegistry): DropdownChoice[] {
@@ -460,6 +470,15 @@ export function FlowVariableDefinitions(registry: FlowRegistry): CompanionVariab
 					variableId: `${activeSourceVariable(d.id, level)}_label`,
 					name: `Flows - ${d.label} ${LEVEL_LABEL[level]} Active Source`,
 				},
+				// Only a destination fed one channel at a time has a channel to report.
+				...(d.takesChannel
+					? [
+							{
+								variableId: `${activeSourceVariable(d.id, level)}_channel`,
+								name: `Flows - ${d.label} ${LEVEL_LABEL[level]} Active Source Channel`,
+							},
+						]
+					: []),
 			]),
 		]),
 	]
@@ -532,37 +551,7 @@ export interface EssenceRevival {
 	(path: string, level: 'audio'): VAPI.AT1130.Audio.Essence
 }
 
-type AnyEssence = VAPI.AT1130.Video.Essence | VAPI.AT1130.Audio.Essence
-
-/** A direct essence-reference keyword, which is what every processor input is. */
-interface DirectSourceKeyword {
-	command: { write: (essence: never) => Promise<void> }
-}
-
-/** Map a processor input ID back to the keyword it names. */
-function processorInputKeyword(vm: VAPI.AT1130.Root, id: string): DirectSourceKeyword | null {
-	const mixer = /^mixer_(\d+)_(a|b|key)$/.exec(id)
-	if (mixer && vm.video_mixer) {
-		const row = vm.video_mixer.instances.row(Number(mixer[1]))
-		if (mixer[2] === 'a') return row.v_src0
-		if (mixer[2] === 'b') return row.v_src1
-		return row.luma_keyer.v_src
-	}
-
-	const delay = /^delay_(\d+)_in_(\d+)$/.exec(id)
-	if (delay && vm.re_play) {
-		return vm.re_play.video.delays.row(Number(delay[1])).inputs.row(Number(delay[2])).v_src
-	}
-
-	const audioDelay = /^audio_delay_(\d+)_in$/.exec(id)
-	if (audioDelay && vm.re_play) {
-		return vm.re_play.audio.delays.row(Number(audioDelay[1])).inputs.a_src
-	}
-
-	if (id === 'monitor_live' && vm.monitoring) return vm.monitoring.live_view.v_src
-
-	return null
-}
+export type AnyEssence = VAPI.AT1130.Video.Essence | VAPI.AT1130.Audio.Essence
 
 /**
  * Whether routing `sourceId` into `destinationId` would feed a processor from its own output.
@@ -577,8 +566,15 @@ export function isSelfLoop(registry: FlowRegistry, sourceId: string, destination
 	return source.node === destination.node
 }
 
-/** How to apply a route to one destination, per level. A missing level cannot be routed. */
-export type DestinationWriter = Partial<Record<FlowLevel, (essence: AnyEssence | null) => Promise<void>>>
+/**
+ * How to apply a route to one destination, per level. A missing level cannot be routed.
+ *
+ * `channel` is the channel of the source to take, and matters only where the destination selects
+ * one - an audio shuffler. Every other writer takes the whole essence and ignores it.
+ */
+export type DestinationWriter = Partial<
+	Record<FlowLevel, (essence: AnyEssence | null, channel: number) => Promise<void>>
+>
 
 /**
  * Build the write for each level a destination supports.
@@ -591,6 +587,7 @@ export function resolveDestinationWriter(
 	vm: VAPI.AT1130.Root,
 	registry: FlowRegistry,
 	id: string,
+	processors: ProcessorState,
 ): DestinationWriter | null {
 	const destination = registry.destinations.get(id)
 	if (!destination) return null
@@ -605,12 +602,12 @@ export function resolveDestinationWriter(
 		}
 	}
 
-	// Processor inputs take a bare essence reference rather than a TimedSource, so they cannot go
-	// through the same write as an SDI output or an RTP transmitter.
+	// A processor input carries the write discovery built for it, which is what keeps the shapes
+	// that are not a plain demand keyword - a UDX's, a shuffler's - out of this function.
 	if (destination.kind === 'processor') {
-		const keyword = processorInputKeyword(vm, destination.id)
-		if (!keyword) return null
-		return { [destination.levels[0]]: async (essence: AnyEssence | null) => keyword.command.write(essence as never) }
+		const input = processors.inputs.get(destination.id)
+		if (!input) return null
+		return { [input.level]: input.write }
 	}
 
 	if (destination.kind === 'rtp_transmitter') {

@@ -53,18 +53,34 @@ export interface NamedRow {
 	}
 }
 
+/**
+ * Follow a row's name, applying `fallback` while the device reports a blank one.
+ *
+ * A name reaches dropdown choices, variable names and label values, so a change schedules the
+ * rebuild that republishes all three - and only a change does, since the initial read arrives here
+ * for every row at discovery.
+ */
 export async function watchRowName(
 	self: ModuleInstance,
-	label: string,
+	id: string,
 	row: NamedRow,
+	fallback: string,
 	apply: (name: string) => void,
 	collect: (watcher: VScript.Watcher) => void,
 ): Promise<void> {
+	let current: string | null = null
 	await watchKeyword<unknown>(
 		self,
-		label,
+		`${id}.row_name`,
 		{ watch: async (handler, opts) => row.raw.watch({ kw: 'row_name_status' }, handler, opts) },
-		(v) => apply(typeof v === 'string' ? v : ''),
+		(v) => {
+			const trimmed = typeof v === 'string' ? v.trim() : ''
+			const name = trimmed === '' ? fallback : trimmed
+			if (name === current) return
+			current = name
+			apply(name)
+			self.scheduleDefinitionRefresh()
+		},
 		collect,
 	)
 }
