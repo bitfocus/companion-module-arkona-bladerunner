@@ -64,6 +64,7 @@ export function writeBlockedReason(towel: string, vm: VAPI.AT1130.Root | null): 
 /** Owns the socket and its lifecycle. Nothing else in the module touches vscript directly. */
 export class BladeConnection {
 	readonly #self: ModuleInstance
+	readonly #open: typeof VAPI.VM.open
 	#vm: VAPI.AT1130.Root | null = null
 	#watchers: VScript.Watcher[] = []
 	#retryTimer: NodeJS.Timeout | null = null
@@ -73,8 +74,9 @@ export class BladeConnection {
 	/** Set while `disconnect()` is tearing down, so late socket events are ignored. */
 	#shuttingDown = false
 
-	constructor(self: ModuleInstance) {
+	constructor(self: ModuleInstance, open: typeof VAPI.VM.open = VAPI.VM.open) {
 		this.#self = self
+		this.#open = open
 	}
 
 	get vm(): VAPI.AT1130.Root | null {
@@ -110,7 +112,7 @@ export class BladeConnection {
 
 		let vm: VAPI.VM.Any
 		try {
-			vm = await VAPI.VM.open({
+			vm = await this.#open({
 				ip: config.host,
 				port: config.port,
 				protocol: config.protocol,

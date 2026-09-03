@@ -1,6 +1,48 @@
-import { describe, expect, it } from 'vitest'
-import { formatNullable, formatUptime } from '../variables.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { formatNullable, formatUptime, VariableBatcher } from '../variables.js'
 import { describeWriteError, writeBlockedReason } from '../vm.js'
+
+afterEach(() => vi.useRealTimers())
+
+describe('VariableBatcher', () => {
+	it('coalesces updates and keeps the latest value for each variable', async () => {
+		vi.useFakeTimers()
+		const setVariableValues = vi.fn()
+		const batcher = new VariableBatcher({ setVariableValues } as any)
+		batcher.set('one', 1)
+		batcher.set('two', 2)
+		batcher.set('one', 3)
+		expect(setVariableValues).not.toHaveBeenCalled()
+
+		await vi.advanceTimersByTimeAsync(100)
+
+		expect(setVariableValues).toHaveBeenCalledOnce()
+		expect(setVariableValues).toHaveBeenCalledWith({ one: 3, two: 2 })
+	})
+
+	it('flushes immediately and cancels the scheduled batch', async () => {
+		vi.useFakeTimers()
+		const setVariableValues = vi.fn()
+		const batcher = new VariableBatcher({ setVariableValues } as any)
+		batcher.set('one', 1)
+		batcher.flush()
+		expect(setVariableValues).toHaveBeenCalledWith({ one: 1 })
+
+		await vi.advanceTimersByTimeAsync(100)
+		expect(setVariableValues).toHaveBeenCalledOnce()
+	})
+
+	it('drops pending values when disposed', async () => {
+		vi.useFakeTimers()
+		const setVariableValues = vi.fn()
+		const batcher = new VariableBatcher({ setVariableValues } as any)
+		batcher.set('old_device', 1)
+		batcher.dispose()
+
+		await vi.advanceTimersByTimeAsync(100)
+		expect(setVariableValues).not.toHaveBeenCalled()
+	})
+})
 
 describe('formatUptime', () => {
 	it('renders a clock below a day', () => {

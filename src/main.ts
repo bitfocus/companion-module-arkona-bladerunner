@@ -6,6 +6,7 @@ import { ProcessorState, subscribeProcessors } from './processors.js'
 import { RtpState, RtpVariableDefinitions, subscribeRtp } from './rtp.js'
 import { GetConfigFields, type ModuleConfig, type ModuleSecrets } from './config.js'
 import { UpdateFeedbacks } from './feedbacks.js'
+import { clearDeviceState } from './device-state.js'
 import { IoManager, IoVariableDefinitions } from './io.js'
 import { IssueState, IssueVariableDefinitions, publishIssues } from './issues.js'
 import { UpdatePresets } from './presets.js'
@@ -184,12 +185,7 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 		this.#refreshTimer = null
 		this.io.dispose()
 		await this.connection.disconnect()
-		this.clocks.clear()
-		this.rtp.clear()
-		this.processors.clear()
-		this.issues.clear()
-		this.tableCounts = NO_TABLES
-		this.identifyActive = false
+		clearDeviceState(this)
 		this.config = config
 		this.secrets = secrets
 		this.rebuildDefinitions()

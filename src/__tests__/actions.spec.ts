@@ -112,4 +112,30 @@ describe('action connection requirements', () => {
 		expect(clearEvents).not.toHaveBeenCalled()
 		expect(self.log).toHaveBeenCalledWith('warn', expect.stringContaining('someone-else'))
 	})
+
+	it('clears both RTP counter groups and reports a write failure', async () => {
+		const clearErrors = vi.fn(async () => undefined)
+		const clearEvents = vi.fn().mockRejectedValue(new Error('counter failure'))
+		const vm = {
+			raw: { current_towel: { value: 'companion' } },
+			r_t_p_receiver: {
+				video_receivers: {
+					row: () => ({
+						generic: {
+							clear_error_counters: { write: clearErrors },
+							clear_event_counters: { write: clearEvents },
+						},
+					}),
+				},
+				audio_receivers: { row: vi.fn() },
+			},
+		}
+		const { self, definitions } = actionHarness(vm)
+
+		await definitions.clear_rtp_counters.callback({ options: { receiver: 'v_0' } })
+
+		expect(clearErrors).toHaveBeenCalledWith('Click')
+		expect(clearEvents).toHaveBeenCalledWith('Click')
+		expect(self.log).toHaveBeenCalledWith('error', expect.stringContaining('counter failure'))
+	})
 })

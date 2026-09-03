@@ -7,6 +7,7 @@ import {
 	IoState,
 	isLocked,
 	IoVariableDefinitions,
+	IoManager,
 	type BncCapability,
 	type BncState,
 	type SdiInputState,
@@ -186,5 +187,18 @@ describe('BNC choices', () => {
 
 	it('adds a direction variable per BNC', () => {
 		expect(IoVariableDefinitions(state).map((d) => d.variableId)).toContain('sdi_1_configuration')
+	})
+})
+
+describe('IoManager.dispose', () => {
+	it('removes ports and BNC capabilities inherited from the previous Blade', () => {
+		const manager = new IoManager()
+		manager.state.inputs.set(1, input({ index: 1 }))
+		manager.state.bncs.set(1, { index: 1, capability: 'ceInOut', direction: 'Input' })
+
+		manager.dispose()
+
+		expect(manager.state.inputs.size).toBe(0)
+		expect(manager.state.bncs.size).toBe(0)
 	})
 })
