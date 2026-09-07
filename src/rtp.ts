@@ -379,7 +379,16 @@ async function watchTally(
 
 			const variable = activeSourceVariable(destination, level)
 			batcher.set(variable, sourceIdForPath(path, level, self.processors) ?? '')
-			self.checkFeedbacks('flow_routed')
+			if (entry.carriesVideo && entry.embedsAudio) {
+				batcher.set(
+					`dest_${destination}_breakaway`,
+					String(
+						sourceIdForPath(entry.videoSourcePath, 'video', self.processors) !==
+							sourceIdForPath(entry.audioSourcePath, 'audio', self.processors),
+					),
+				)
+			}
+			self.checkFeedbacks('flow_routed', 'flow_breakaway')
 
 			if (!source) {
 				if (level === 'video') entry.videoSourceName = null

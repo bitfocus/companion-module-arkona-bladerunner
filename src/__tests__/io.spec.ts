@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
 	allowedDirections,
 	canSetDirection,
@@ -12,7 +12,9 @@ import {
 	type BncState,
 	type SdiInputState,
 } from '../io.js'
-import { activeIssues, formatIssueLabel, formatIssueLabels } from '../issues.js'
+import { ProcessorState } from '../processors.js'
+import { RtpState } from '../rtp.js'
+import { IssueState, activeIssues, formatIssueLabel, formatIssueLabels } from '../issues.js'
 
 const input = (over: Partial<SdiInputState> = {}): SdiInputState => ({
 	index: 0,
@@ -200,5 +202,90 @@ describe('IoManager.dispose', () => {
 
 		expect(manager.state.inputs.size).toBe(0)
 		expect(manager.state.bncs.size).toBe(0)
+	})
+})
+
+describe('SDI live updates', () => {
+	it('refreshes breakaway feedback and retires health entries when an output becomes an input', async () => {
+		vi.useFakeTimers()
+		const manager = new IoManager()
+		try {
+			const keyword = (initial: unknown) => ({
+				watch: vi.fn(async (handler: (value: any) => void) => {
+					handler(initial)
+					return { unwatch: vi.fn() }
+				}),
+			})
+			const direction = keyword('Output')
+			const video = keyword(null)
+			const audio = keyword(null)
+			let outputs = [8]
+			const values: Record<string, unknown> = {}
+			const self = {
+				io: manager,
+				issues: new IssueState(),
+				processors: new ProcessorState(),
+				rtp: new RtpState(),
+				get flowState() {
+					return { io: manager.state, processors: this.processors, rtp: this.rtp }
+				},
+				variables: {
+					set: (id: string, value: unknown) => {
+						values[id] = value
+					},
+					flush: vi.fn(),
+				},
+				checkFeedbacks: vi.fn(),
+				rebuildDefinitions: vi.fn(),
+				scheduleDefinitionRefresh: vi.fn(),
+				log: vi.fn(),
+			}
+			self.issues.sources.set('temperature', { id: 'temperature', label: 'Temperature', flags: [] })
+			const vm = {
+				i_o_module: {
+					configuration: { allocated_indices: async () => [8], row: () => ({ direction }) },
+					info: { bnc: { row: () => ({ direction: { read: async () => 'ceInOut' } }) } },
+					input: { allocated_indices: async () => [] },
+					output: {
+						allocated_indices: async () => outputs,
+						row: () => ({
+							sdi: {
+								standard: keyword(null),
+								issues: keyword({ missing_t_src: true }),
+								t_src: { status: keyword(null) },
+								v_src: { status: video },
+							},
+							a_src: { status: audio },
+							resync_counter: keyword(0),
+						}),
+					},
+				},
+			}
+			await manager.start(self as any, vm as any)
+			const source = (level: string) => ({
+				source: {
+					raw: { kwl: `i_o_module.input[3].sdi.output.${level}` },
+					brief: { read: async () => 'Camera 3' },
+				},
+			})
+			video.watch.mock.calls[0][0](source('video'))
+			expect(values.dest_sdi_out_8_breakaway).toBe('true')
+			expect(self.checkFeedbacks).toHaveBeenLastCalledWith('sdi_output_active', 'flow_routed', 'flow_breakaway')
+			audio.watch.mock.calls[0][0](source('audio'))
+			expect(values.dest_sdi_out_8_breakaway).toBe('false')
+			expect(values.issues_count).toBe(1)
+
+			outputs = []
+			direction.watch.mock.calls[0][0]('Input')
+			await vi.advanceTimersByTimeAsync(750)
+			expect(self.issues.sources.has('sdi_out_8')).toBe(false)
+			expect(self.issues.sources.has('temperature')).toBe(true)
+			expect(values.issues_count).toBe(0)
+			expect(values.issues_sources).toBe('')
+			expect(self.checkFeedbacks).toHaveBeenCalledWith('has_issues')
+		} finally {
+			manager.dispose()
+			vi.useRealTimers()
+		}
 	})
 })

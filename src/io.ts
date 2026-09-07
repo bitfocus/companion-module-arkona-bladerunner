@@ -2,7 +2,7 @@ import type { CompanionVariableDefinition, DropdownChoice } from '@companion-mod
 import type * as VAPI from 'vapi'
 import type * as VScript from 'vscript'
 import type { ModuleInstance } from './main.js'
-import { activeIssues, formatIssueLabels, reportIssues } from './issues.js'
+import { activeIssues, formatIssueLabels, publishIssues, reportIssues } from './issues.js'
 import {
 	activeSourceVariable,
 	buildRegistry,
@@ -267,6 +267,12 @@ export class IoManager {
 		this.state.clear()
 
 		const [inputs, outputs] = await Promise.all([iom.input.allocated_indices(), iom.output.allocated_indices()])
+		const outputIds = new Set(outputs.map((i) => `sdi_out_${i}`))
+		for (const id of self.issues.sources.keys()) {
+			if (/^sdi_out_\d+$/.test(id) && !outputIds.has(id)) self.issues.sources.delete(id)
+		}
+		publishIssues(self)
+		self.checkFeedbacks('has_issues')
 		for (const i of inputs) {
 			this.state.inputs.set(i, {
 				index: i,
@@ -514,7 +520,7 @@ export class IoManager {
 			`dest_${destination}_breakaway`,
 			String(isBreakaway(buildRegistry(self.flowState).destinations.get(destination))),
 		)
-		self.checkFeedbacks('sdi_output_active', 'flow_routed')
+		self.checkFeedbacks('sdi_output_active', 'flow_routed', 'flow_breakaway')
 
 		const setLabel = (label: string): void => {
 			if (level === 'video') {
