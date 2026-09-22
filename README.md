@@ -30,3 +30,12 @@ refresh the lockfile checksums. The SDK version must match the BLADE//runner sof
 targeted.
 
 `vutil` is Arkona-internal test tooling and is deliberately not a dependency of this module.
+
+## Packaging
+
+`build-config.cjs` turns webpack's module concatenation off for `yarn package`. With it on,
+webpack 5.110 miscompiles the `new WebSocket(...)` call in vscript's `ws` adapter into
+`(new moduleGetter())(url, …)`, so the packaged module could never open a socket and every
+connection attempt failed with `S is not a constructor`. Only the packaged build was affected —
+`dist/`, which `yarn dev` and the dev-module entrypoint use, is plain `tsc` output. Remove the
+workaround once the upstream codegen is fixed.

@@ -43,6 +43,109 @@ export function describeWriteError(error: unknown): string {
 	return message
 }
 
+/** A failed connection attempt, split into what the status shows and what the log says. */
+export interface ConnectFailure {
+	/** Short enough for the status column in the connections list. */
+	status: string
+	/** The same failure with what to do about it, for the log line. */
+	detail: string
+}
+
+/**
+ * Turn a failed connection attempt into something the operator can act on.
+ *
+ * What lands here is whatever the layer that gave up produced: a node socket error, one of
+ * vscript's handshake errors, a plain string from its build_info download, or - when the module
+ * itself is at fault - a TypeError. None of them mention the Blade or say what to change, and the
+ * raw text of the last kind ("S is not a constructor") is meaningless to an operator.
+ */
+export function describeConnectError(error: unknown, target: string): ConnectFailure {
+	const message = error instanceof Error ? error.message : String(error)
+	const code = error instanceof Error && 'code' in error ? String(error.code) : ''
+
+	switch (code) {
+		case 'ECONNREFUSED':
+			return {
+				status: 'Connection refused',
+				detail: `nothing is listening on ${target}. Check the Blade is powered on, and that the Port and Protocol in this connection's config match its web interface.`,
+			}
+		case 'EHOSTUNREACH':
+		case 'EHOSTDOWN':
+		case 'ENETUNREACH':
+			return {
+				status: 'Host unreachable',
+				detail: `there is no network route to ${target}. Check the Blade IP, and that this machine is on a network that can reach it.`,
+			}
+		case 'ETIMEDOUT':
+			return {
+				status: 'No response',
+				detail: `${target} accepted no connection before the attempt timed out. Check the Blade IP and that nothing between the two machines is blocking the port.`,
+			}
+		case 'ENOTFOUND':
+		case 'EAI_AGAIN':
+			return {
+				status: 'Unknown host',
+				detail: `the address ${target} could not be resolved. Enter the Blade's IP address in this connection's config.`,
+			}
+		case 'ECONNRESET':
+			return {
+				status: 'Connection reset',
+				detail: `${target} closed the connection during the handshake. If the Blade uses https, set Protocol to wss.`,
+			}
+	}
+
+	// vscript rejects an unauthorised handshake with its own advice, which names a VM.open parameter
+	// this module sets from the config fields rather than the fields themselves.
+	if (/password-protected|Unauthorized/i.test(message)) {
+		return {
+			status: 'Login required',
+			detail: `${target} is password protected. Fill in the Username and Password fields in this connection's config.`,
+		}
+	}
+
+	// A rejected certificate names itself in the message, in the error code ('CERT_HAS_EXPIRED',
+	// 'DEPTH_ZERO_SELF_SIGNED_CERT', …) or in both, depending on where node gave up.
+	if (/certificate|self.signed|_CERT|CERT_|\bSSL\b|\bTLS\b/i.test(`${code} ${message}`)) {
+		return {
+			status: 'Certificate rejected',
+			detail: `the certificate ${target} presented was not accepted (${message}). Blades ship with a self-signed certificate, so set Protocol to ws unless the Blade has one your system trusts.`,
+		}
+	}
+
+	if (/^Timeout after/.test(message)) {
+		return {
+			status: 'No response',
+			detail: `${target} did not answer in time (${message}). Check the Blade IP, and that Protocol matches what its web interface serves.`,
+		}
+	}
+
+	// Something is listening and speaks HTTP, but did not complete a Blade websocket handshake.
+	if (/unexpected response|webserver_buildinfo|unexpectedly closed/i.test(message)) {
+		return {
+			status: 'Not a Blade',
+			detail: `${target} answered, but not as a BLADE//runner web interface (${message}). Check the IP, Port and Protocol point at a Blade.`,
+		}
+	}
+
+	// The websocket is up but the build_info fetch that follows it uses plain http(s) on the same
+	// port, so this is usually a proxy or firewall that allows one and not the other.
+	if (/^Unable to download/.test(message)) {
+		return {
+			status: 'Incomplete handshake',
+			detail: `the websocket to ${target} opened but its build information could not be read (${message}). Check that http access to the Blade is not blocked.`,
+		}
+	}
+
+	if (error instanceof TypeError) {
+		return {
+			status: 'Module error',
+			detail: `the module hit an internal error while connecting to ${target} (${message}). This is a bug in the module rather than a problem with the Blade - please report it.`,
+		}
+	}
+
+	return { status: 'Connection failed', detail: `could not connect to ${target} (${message}).` }
+}
+
 /**
  * Why a control action cannot proceed, or null if it can.
  *
@@ -73,6 +176,8 @@ export class BladeConnection {
 	#connectionGeneration = 0
 	/** Set while `disconnect()` is tearing down, so late socket events are ignored. */
 	#shuttingDown = false
+	/** The last problem written to the log, so a retry loop reports a change rather than a tick. */
+	#reportedProblem: string | null = null
 
 	constructor(self: ModuleInstance, open: typeof VAPI.VM.open = VAPI.VM.open) {
 		this.#self = self
@@ -122,10 +227,14 @@ export class BladeConnection {
 					if (generation === this.#connectionGeneration) this.#onSocketEvent(ev)
 				},
 			})
-		} catch (e: any) {
+		} catch (e: unknown) {
 			if (generation !== this.#connectionGeneration) return
-			this.#self.log('error', `Connection to ${config.host} failed: ${e?.message ?? e}`)
-			this.#self.updateStatus(InstanceStatus.ConnectionFailure, e?.message ?? 'Connection failed')
+			const failure = describeConnectError(e, `${config.host}:${config.port}`)
+			this.#reportProblem(
+				'error',
+				`Connection failed: ${failure.detail} Retrying every ${INITIAL_RETRY_MS / 1000} seconds.`,
+			)
+			this.#self.updateStatus(InstanceStatus.ConnectionFailure, failure.status)
 			this.#scheduleRetry()
 			return
 		}
@@ -146,6 +255,7 @@ export class BladeConnection {
 		}
 
 		this.#vm = vm
+		this.#reportedProblem = null
 		this.#self.log('info', `Connected to ${config.host} (${vm.raw.build_info.hardware_model ?? 'AT1130'})`)
 
 		if (config.towel) {
@@ -172,6 +282,7 @@ export class BladeConnection {
 	async disconnect(): Promise<void> {
 		this.#shuttingDown = true
 		this.#connectionGeneration++
+		this.#reportedProblem = null
 		this.#clearRetry()
 		const pending = this.#connectPromise
 
@@ -201,6 +312,7 @@ export class BladeConnection {
 
 		switch (ev.event_type) {
 			case 'connection-reopened':
+				this.#reportedProblem = null
 				this.#self.log('info', 'Connection re-established')
 				this.#self.updateStatus(InstanceStatus.Ok)
 				break
@@ -212,21 +324,38 @@ export class BladeConnection {
 				break
 
 			case 'unexpected-close':
-				this.#self.updateStatus(InstanceStatus.ConnectionFailure, 'Connection lost')
+				// vscript reconnects on its own from here, so this is a report rather than a dead end.
+				this.#reportProblem('warn', 'Lost contact with the Blade; reconnecting')
+				this.#self.updateStatus(InstanceStatus.ConnectionFailure, 'Reconnecting')
 				break
 
 			case 'websocket-error':
-				this.#self.updateStatus(InstanceStatus.ConnectionFailure, 'Socket error')
+				this.#reportProblem('warn', 'Network error on the connection to the Blade; reconnecting')
+				this.#self.updateStatus(InstanceStatus.ConnectionFailure, 'Reconnecting')
 				break
 
 			case 'error':
-				this.#self.log('error', `Socket error: ${ev.error?.message ?? ev.error}`)
+				this.#reportProblem('error', `Socket error: ${ev.error?.message ?? ev.error}`)
 				break
 
 			case 'info':
 				this.#self.log('debug', ev.msg)
 				break
 		}
+	}
+
+	/**
+	 * Log a problem the first time it is seen, and again only once it reads differently.
+	 *
+	 * Both reconnect loops - ours for the initial open, vscript's for an established socket - keep
+	 * producing the same failure for as long as the Blade is away, which is an outage worth one log
+	 * entry rather than one every few seconds. Connecting clears the memory, so the next outage is
+	 * reported again.
+	 */
+	#reportProblem(level: 'warn' | 'error', message: string): void {
+		if (this.#reportedProblem === message) return
+		this.#reportedProblem = message
+		this.#self.log(level, message)
 	}
 
 	#scheduleRetry(): void {

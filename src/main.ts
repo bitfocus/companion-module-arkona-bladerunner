@@ -20,7 +20,7 @@ import {
 	type FlowStateSources,
 } from './routing.js'
 import { UpgradeScripts } from './upgrades.js'
-import { BladeConnection } from './vm.js'
+import { BladeConnection, describeConnectError } from './vm.js'
 import {
 	readTableCounts,
 	subscribeSystemVariables,
@@ -74,9 +74,10 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 
 	/** Begin connecting in the background, keeping any failure out of an unhandled rejection. */
 	startConnecting(): void {
-		this.connection.connect().catch((e: any) => {
-			this.log('error', `Connection failed: ${e?.message ?? e}`)
-			this.updateStatus(InstanceStatus.ConnectionFailure, e?.message ?? 'Connection failed')
+		this.connection.connect().catch((e: unknown) => {
+			const failure = describeConnectError(e, `${this.config.host}:${this.config.port}`)
+			this.log('error', `Connection failed: ${failure.detail}`)
+			this.updateStatus(InstanceStatus.ConnectionFailure, failure.status)
 		})
 	}
 
