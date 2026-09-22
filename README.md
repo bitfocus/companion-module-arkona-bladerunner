@@ -17,7 +17,7 @@ host as release tarballs:
 
 | Package   | Version | Role                                                                      |
 | --------- | ------- | ------------------------------------------------------------------------- |
-| `vapi`    | 2.6.45  | typed overlay describing the VM state tree (`AT1130.Root`, `System`, …)   |
+| `vapi`    | 2.6.47  | typed overlay describing the VM state tree (`AT1130.Root`, `System`, …)   |
 | `vscript` | 2.6.8   | the client itself: WebSocket transport, keyword read/watch, subscriptions |
 
 `yarn.lock` records a checksum for each tarball, so the contents are pinned as firmly as a registry
