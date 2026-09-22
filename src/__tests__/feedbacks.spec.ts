@@ -44,6 +44,7 @@ function harness() {
 		issues,
 		flowState,
 		identifyActive: true,
+		flowRegistry: () => buildRegistry(flowState),
 		setFeedbackDefinitions: vi.fn((value) => {
 			definitions = value
 		}),

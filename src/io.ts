@@ -12,6 +12,7 @@ import {
 	sourceIdForPath,
 	type FlowLevel,
 } from './routing.js'
+import { RestartableTimer } from './timers.js'
 import { watchAll, watchKeyword } from './watch.js'
 
 /** Rediscovery is debounced so flipping several BNCs in a row costs one pass, not one each. */
@@ -142,7 +143,6 @@ export function IoVariableDefinitions(state: IoState): CompanionVariableDefiniti
 			{ variableId: `sdi_out_${i}_issues`, name: `SDI Output ${i} - Issues` },
 			{ variableId: `sdi_out_${i}_resync_count`, name: `SDI Output ${i} - Resync Count` },
 			{ variableId: `sdi_out_${i}_time_source`, name: `SDI Output ${i} - Time Source` },
-			{ variableId: `sdi_out_${i}_time_source`, name: `SDI Output ${i} - Time Source` },
 		]),
 	]
 }
@@ -185,7 +185,7 @@ export class IoManager {
 	#directionWatchers: VScript.Watcher[] = []
 	/** Last seen direction per BNC, so an initial read is not mistaken for a change. */
 	#directions = new Map<number, string>()
-	#rediscoverTimer: NodeJS.Timeout | null = null
+	readonly #rediscoverTimer = new RestartableTimer()
 
 	/** Full setup for a fresh connection: watch BNC directions, then discover and subscribe. */
 	async start(self: ModuleInstance, vm: VAPI.AT1130.Root): Promise<void> {
@@ -246,9 +246,7 @@ export class IoManager {
 
 	/** A BNC changed direction, so the input/output tables have been reallocated underneath us. */
 	#scheduleRediscover(self: ModuleInstance, vm: VAPI.AT1130.Root): void {
-		if (this.#rediscoverTimer) clearTimeout(this.#rediscoverTimer)
-		this.#rediscoverTimer = setTimeout(() => {
-			this.#rediscoverTimer = null
+		this.#rediscoverTimer.restart(REDISCOVER_DEBOUNCE_MS, () => {
 			void (async () => {
 				try {
 					await this.#discoverAndSubscribe(self, vm)
@@ -256,7 +254,7 @@ export class IoManager {
 					self.log('warn', `Rediscovery failed: ${e?.message ?? e}`)
 				}
 			})()
-		}, REDISCOVER_DEBOUNCE_MS)
+		})
 	}
 
 	async #discoverAndSubscribe(self: ModuleInstance, vm: VAPI.AT1130.Root): Promise<void> {
@@ -267,10 +265,7 @@ export class IoManager {
 		this.state.clear()
 
 		const [inputs, outputs] = await Promise.all([iom.input.allocated_indices(), iom.output.allocated_indices()])
-		const outputIds = new Set(outputs.map((i) => `sdi_out_${i}`))
-		for (const id of self.issues.sources.keys()) {
-			if (/^sdi_out_\d+$/.test(id) && !outputIds.has(id)) self.issues.sources.delete(id)
-		}
+		self.issues.retire('sdi_out_', new Set(outputs.map((i) => `sdi_out_${i}`)))
 		publishIssues(self)
 		self.checkFeedbacks('has_issues')
 		for (const i of inputs) {
@@ -571,10 +566,7 @@ export class IoManager {
 	}
 
 	dispose(): void {
-		if (this.#rediscoverTimer) {
-			clearTimeout(this.#rediscoverTimer)
-			this.#rediscoverTimer = null
-		}
+		this.#rediscoverTimer.cancel()
 		this.#disposePortWatchers()
 		this.#disposeDirectionWatchers()
 		this.state.clear()

@@ -5,7 +5,6 @@ import { formatStandard, isLocked } from './io.js'
 import { ANY_ISSUE_SOURCE, issueChoices, SDI_OUTPUT_ISSUE_LABELS } from './issues.js'
 import type { ModuleInstance } from './main.js'
 import {
-	buildRegistry,
 	type FlowRegistry,
 	sourceChannelOption,
 	destinationChoices,
@@ -234,9 +233,9 @@ export function UpdateFeedbacks(self: ModuleInstance, registry: FlowRegistry): v
 				sourceChannelOption(registry),
 			],
 			callback: (feedback) => {
-				// Rebuilt per evaluation so the tally reflects the live IoState, not the state as it
-				// was when the definitions were last registered.
-				const destination = buildRegistry(self.flowState).destinations.get(String(feedback.options.destination))
+				// Read fresh from `self.flowRegistry()` so the tally reflects the live IoState, not the
+				// state as it was when the definitions were last registered.
+				const destination = self.flowRegistry().destinations.get(String(feedback.options.destination))
 				if (!destination) return false
 				const wanted = String(feedback.options.source)
 				const wantedChannel = Number(feedback.options.source_channel ?? 0)
@@ -289,8 +288,7 @@ export function UpdateFeedbacks(self: ModuleInstance, registry: FlowRegistry): v
 					choices: flowDestinations,
 				},
 			],
-			callback: (feedback) =>
-				isBreakaway(buildRegistry(self.flowState).destinations.get(String(feedback.options.destination))),
+			callback: (feedback) => isBreakaway(self.flowRegistry().destinations.get(String(feedback.options.destination))),
 		},
 
 		sdi_configuration: {

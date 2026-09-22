@@ -2,6 +2,7 @@ import { InstanceStatus } from '@companion-module/base'
 import * as VAPI from 'vapi'
 import type * as VScript from 'vscript'
 import type { ModuleInstance } from './main.js'
+import { RestartableTimer } from './timers.js'
 
 /**
  * Retry delay for the *initial* connection only.
@@ -170,12 +171,13 @@ export class BladeConnection {
 	readonly #open: typeof VAPI.VM.open
 	#vm: VAPI.AT1130.Root | null = null
 	#watchers: VScript.Watcher[] = []
-	#retryTimer: NodeJS.Timeout | null = null
+	readonly #retryTimer = new RestartableTimer()
 	#connectPromise: Promise<void> | null = null
-	/** Invalidates an in-flight open when a newer connect or disconnect takes ownership. */
+	/**
+	 * Invalidates an in-flight open when a newer connect or disconnect takes ownership - including a
+	 * disconnect's own teardown, so a socket event arriving after `disconnect()` starts is ignored too.
+	 */
 	#connectionGeneration = 0
-	/** Set while `disconnect()` is tearing down, so late socket events are ignored. */
-	#shuttingDown = false
 	/** The last problem written to the log, so a retry loop reports a change rather than a tick. */
 	#reportedProblem: string | null = null
 
@@ -203,8 +205,7 @@ export class BladeConnection {
 	}
 
 	async #openAndDiscover(): Promise<void> {
-		this.#clearRetry()
-		this.#shuttingDown = false
+		this.#retryTimer.cancel()
 		const generation = ++this.#connectionGeneration
 
 		const config = this.#self.config
@@ -280,10 +281,9 @@ export class BladeConnection {
 	}
 
 	async disconnect(): Promise<void> {
-		this.#shuttingDown = true
 		this.#connectionGeneration++
 		this.#reportedProblem = null
-		this.#clearRetry()
+		this.#retryTimer.cancel()
 		const pending = this.#connectPromise
 
 		for (const watcher of this.#watchers) {
@@ -308,8 +308,6 @@ export class BladeConnection {
 	}
 
 	#onSocketEvent(ev: VScript.DataViews.VSocketEvent): void {
-		if (this.#shuttingDown) return
-
 		switch (ev.event_type) {
 			case 'connection-reopened':
 				this.#reportedProblem = null
@@ -359,17 +357,6 @@ export class BladeConnection {
 	}
 
 	#scheduleRetry(): void {
-		this.#clearRetry()
-		this.#retryTimer = setTimeout(() => {
-			this.#retryTimer = null
-			void this.connect()
-		}, INITIAL_RETRY_MS)
-	}
-
-	#clearRetry(): void {
-		if (this.#retryTimer) {
-			clearTimeout(this.#retryTimer)
-			this.#retryTimer = null
-		}
+		this.#retryTimer.restart(INITIAL_RETRY_MS, () => void this.connect())
 	}
 }

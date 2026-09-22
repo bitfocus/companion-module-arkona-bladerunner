@@ -187,16 +187,22 @@ export async function subscribeRtp(self: ModuleInstance, vm: VAPI.AT1130.Root): 
 		)
 	}
 
-	for (const i of videoTx) {
+	// Read once at discovery: changing a stream's transport format is a reconfiguration, not something
+	// that happens under a running show. Independent round trips, so read for every transmitter at once.
+	const videoTxVariants = await Promise.all(
+		videoTx.map(async (i) => {
+			try {
+				return (await tx!.video_transmitters.row(i).configuration.transport_format.status.read())?.variant ?? null
+			} catch (e: any) {
+				self.log('debug', `Could not read transport format for video tx ${i}: ${e?.message ?? e}`)
+				return null
+			}
+		}),
+	)
+
+	for (const [txIndex, i] of videoTx.entries()) {
 		const row = tx!.video_transmitters.row(i)
-		// Read once at discovery: changing a stream's transport format is a reconfiguration, not
-		// something that happens under a running show.
-		let variant: string | null = null
-		try {
-			variant = (await row.configuration.transport_format.status.read())?.variant ?? null
-		} catch (e: any) {
-			self.log('debug', `Could not read transport format for video tx ${i}: ${e?.message ?? e}`)
-		}
+		const variant = videoTxVariants[txIndex]
 
 		const entry: RtpTransmitterState = {
 			index: i,

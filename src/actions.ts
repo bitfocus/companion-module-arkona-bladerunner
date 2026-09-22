@@ -1,8 +1,10 @@
+import type { CompanionActionEvent, CompanionInputFieldDropdown } from '@companion-module/base'
 import * as VAPI from 'vapi'
 import * as VScript from 'vscript'
 import { genlockOutputPath, NO_TIME_SOURCE } from './clocks.js'
 import { canSetDirection, type BncDirection } from './io.js'
 import type { ModuleInstance } from './main.js'
+import type { VideoMixerState } from './processors.js'
 import {
 	buildRegistry,
 	type FlowRegistry,
@@ -27,6 +29,20 @@ export function mixerTransitionTarget(input: string, current: number): number {
 	return current < 0.5 ? 1 : 0
 }
 
+/** The Set/Adjust toggle shared by every action that can write an absolute value or nudge one. */
+function operationOption(): CompanionInputFieldDropdown {
+	return {
+		id: 'operation',
+		type: 'dropdown',
+		label: 'Operation',
+		default: 'set',
+		choices: [
+			{ id: 'set', label: 'Set' },
+			{ id: 'adjust', label: 'Adjust' },
+		],
+	}
+}
+
 /** Apply an absolute value or signed adjustment, keeping the device write inside its range. */
 export function adjustedTarget(
 	operation: string,
@@ -38,6 +54,43 @@ export function adjustedTarget(
 	if (operation === 'adjust' && current === null) return null
 	const target = operation === 'adjust' ? current! + value : value
 	return Math.min(maximum, Math.max(minimum, target))
+}
+
+/**
+ * Shared body for the mixer actions that set or adjust one ranged luma/key parameter: validate the
+ * mixer is available and unblocked, compute the target from the Set/Adjust options, and write it.
+ */
+async function writeMixerRangeValue(
+	self: ModuleInstance,
+	event: CompanionActionEvent,
+	label: string,
+	min: number,
+	max: number,
+	scale: number,
+	current: (live: VideoMixerState) => number | null,
+	write: (mixer: NonNullable<VAPI.AT1130.Root['video_mixer']>, index: number, target: number) => Promise<void>,
+): Promise<void> {
+	const vm = self.connection.vm
+	const index = Number(event.options.mixer)
+	const live = self.processors.videoMixers.get(index)
+	if (!vm?.video_mixer || !live) {
+		self.log('warn', `Cannot set ${label}: mixer ${index} is not available`)
+		return
+	}
+	const blocked = writeBlockedReason(self.config.towel, vm)
+	if (blocked) return self.log('warn', `Cannot set ${label}: ${blocked}`)
+	const operation = String(event.options.operation)
+	const amount = Number(operation === 'adjust' ? event.options.adjustment : event.options.value) / scale
+	const target = adjustedTarget(operation, amount, current(live), min, max)
+	if (target === null) {
+		self.log('warn', `Cannot adjust mixer ${index} ${label}: its current value is not known`)
+		return
+	}
+	try {
+		await write(vm.video_mixer, index, target)
+	} catch (e: any) {
+		self.log('error', `Failed to set mixer ${index} ${label}: ${describeWriteError(e)}`)
+	}
 }
 
 /**
@@ -173,16 +226,7 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 						{ id: 1, label: 'Fader 1' },
 					],
 				},
-				{
-					id: 'operation',
-					type: 'dropdown',
-					label: 'Operation',
-					default: 'set',
-					choices: [
-						{ id: 'set', label: 'Set' },
-						{ id: 'adjust', label: 'Adjust' },
-					],
-				},
+				operationOption(),
 				{
 					id: 'value',
 					type: 'number',
@@ -248,16 +292,7 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 			name: 'Video Mixer - Luma Key Clip',
 			options: [
 				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
-				{
-					id: 'operation',
-					type: 'dropdown',
-					label: 'Operation',
-					default: 'set',
-					choices: [
-						{ id: 'set', label: 'Set' },
-						{ id: 'adjust', label: 'Adjust' },
-					],
-				},
+				operationOption(),
 				{
 					id: 'value',
 					type: 'number',
@@ -279,45 +314,24 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 					isVisibleExpression: `$(options:operation) == 'adjust'`,
 				},
 			],
-			callback: async (event) => {
-				const vm = self.connection.vm
-				const index = Number(event.options.mixer)
-				const live = self.processors.videoMixers.get(index)
-				if (!vm?.video_mixer || !live) {
-					self.log('warn', `Cannot set luma key clip: mixer ${index} is not available`)
-					return
-				}
-				const blocked = writeBlockedReason(self.config.towel, vm)
-				if (blocked) return self.log('warn', `Cannot set luma key clip: ${blocked}`)
-				const operation = String(event.options.operation)
-				const amount = Number(operation === 'adjust' ? event.options.adjustment : event.options.value)
-				const target = adjustedTarget(operation, amount, live.clip, -0.07, 1.07)
-				if (target === null) {
-					self.log('warn', `Cannot adjust mixer ${index} luma key clip: its current value is not known`)
-					return
-				}
-				try {
-					await vm.video_mixer.instances.row(index).luma_keyer.clip.write(target)
-				} catch (e: any) {
-					self.log('error', `Failed to set mixer ${index} luma key clip: ${describeWriteError(e)}`)
-				}
-			},
+			callback: async (event) =>
+				writeMixerRangeValue(
+					self,
+					event,
+					'luma key clip',
+					-0.07,
+					1.07,
+					1,
+					(live) => live.clip,
+					async (mixer, index, target) => mixer.instances.row(index).luma_keyer.clip.write(target),
+				),
 		},
 
 		video_mixer_luma_gain: {
 			name: 'Video Mixer - Luma Key Gain',
 			options: [
 				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
-				{
-					id: 'operation',
-					type: 'dropdown',
-					label: 'Operation',
-					default: 'set',
-					choices: [
-						{ id: 'set', label: 'Set' },
-						{ id: 'adjust', label: 'Adjust' },
-					],
-				},
+				operationOption(),
 				{
 					id: 'value',
 					type: 'number',
@@ -339,45 +353,24 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 					isVisibleExpression: `$(options:operation) == 'adjust'`,
 				},
 			],
-			callback: async (event) => {
-				const vm = self.connection.vm
-				const index = Number(event.options.mixer)
-				const live = self.processors.videoMixers.get(index)
-				if (!vm?.video_mixer || !live) {
-					self.log('warn', `Cannot set luma key gain: mixer ${index} is not available`)
-					return
-				}
-				const blocked = writeBlockedReason(self.config.towel, vm)
-				if (blocked) return self.log('warn', `Cannot set luma key gain: ${blocked}`)
-				const operation = String(event.options.operation)
-				const amount = Number(operation === 'adjust' ? event.options.adjustment : event.options.value)
-				const target = adjustedTarget(operation, amount, live.gain, 0.001, 1.131)
-				if (target === null) {
-					self.log('warn', `Cannot adjust mixer ${index} luma key gain: its current value is not known`)
-					return
-				}
-				try {
-					await vm.video_mixer.instances.row(index).luma_keyer.gain.write(target)
-				} catch (e: any) {
-					self.log('error', `Failed to set mixer ${index} luma key gain: ${describeWriteError(e)}`)
-				}
-			},
+			callback: async (event) =>
+				writeMixerRangeValue(
+					self,
+					event,
+					'luma key gain',
+					0.001,
+					1.131,
+					1,
+					(live) => live.gain,
+					async (mixer, index, target) => mixer.instances.row(index).luma_keyer.gain.write(target),
+				),
 		},
 
 		video_mixer_key_opacity: {
 			name: 'Video Mixer - Key Opacity',
 			options: [
 				{ id: 'mixer', type: 'dropdown', label: 'Mixer', default: firstMixer, choices: mixerChoices },
-				{
-					id: 'operation',
-					type: 'dropdown',
-					label: 'Operation',
-					default: 'set',
-					choices: [
-						{ id: 'set', label: 'Set' },
-						{ id: 'adjust', label: 'Adjust' },
-					],
-				},
+				operationOption(),
 				{
 					id: 'value',
 					type: 'number',
@@ -408,32 +401,21 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 					step: 1,
 				},
 			],
-			callback: async (event) => {
-				const vm = self.connection.vm
-				const index = Number(event.options.mixer)
-				const live = self.processors.videoMixers.get(index)
-				if (!vm?.video_mixer || !live) {
-					self.log('warn', `Cannot set key opacity: mixer ${index} is not available`)
-					return
-				}
-				const blocked = writeBlockedReason(self.config.towel, vm)
-				if (blocked) return self.log('warn', `Cannot set key opacity: ${blocked}`)
-				const operation = String(event.options.operation)
-				const amount = Number(operation === 'adjust' ? event.options.adjustment : event.options.value) / 100
-				const target = adjustedTarget(operation, amount, live.opacity, 0, 1)
-				if (target === null) {
-					self.log('warn', `Cannot adjust mixer ${index} key opacity: its current value is not known`)
-					return
-				}
-				try {
-					await vm.video_mixer.instances.row(index).luma_keyer.opacity.transition.write({
-						target,
-						time: new VScript.Duration(Number(event.options.duration), 'ms'),
-					})
-				} catch (e: any) {
-					self.log('error', `Failed to set mixer ${index} key opacity: ${describeWriteError(e)}`)
-				}
-			},
+			callback: async (event) =>
+				writeMixerRangeValue(
+					self,
+					event,
+					'key opacity',
+					0,
+					1,
+					100,
+					(live) => live.opacity,
+					async (mixer, index, target) =>
+						mixer.instances.row(index).luma_keyer.opacity.transition.write({
+							target,
+							time: new VScript.Duration(Number(event.options.duration), 'ms'),
+						}),
+				),
 		},
 
 		video_mixer_key_invert: {

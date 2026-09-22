@@ -19,6 +19,7 @@ import {
 	type FlowRegistry,
 	type FlowStateSources,
 } from './routing.js'
+import { RestartableTimer } from './timers.js'
 import { UpgradeScripts } from './upgrades.js'
 import { BladeConnection, describeConnectError } from './vm.js'
 import {
@@ -46,11 +47,30 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 	/** Mirrors the front panel blink keyword, so the identify feedback evaluates synchronously. */
 	identifyActive = false
 
-	#refreshTimer: NodeJS.Timeout | null = null
+	readonly #refreshTimer = new RestartableTimer()
 
 	/** Everything `buildRegistry` projects the routing graph from. */
 	get flowState(): FlowStateSources {
 		return { io: this.io.state, rtp: this.rtp, processors: this.processors }
+	}
+
+	#cachedFlowRegistry: FlowRegistry | null = null
+
+	/**
+	 * The routing graph, built fresh on first use and cached for the rest of the microtask.
+	 *
+	 * `checkFeedbacks('flow_routed', 'flow_breakaway')` queues every matching button's callback as its
+	 * own microtask; this lets that whole batch share one registry instead of each button rebuilding
+	 * it, while still going stale as soon as the batch is done so the next tally change sees fresh state.
+	 */
+	flowRegistry(): FlowRegistry {
+		if (!this.#cachedFlowRegistry) {
+			this.#cachedFlowRegistry = buildRegistry(this.flowState)
+			queueMicrotask(() => {
+				this.#cachedFlowRegistry = null
+			})
+		}
+		return this.#cachedFlowRegistry
 	}
 
 	/** Fan/PSU row counts, discovered at connect. Read by the variable and preset builders. */
@@ -116,11 +136,7 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 	 * discovery delivers every name at once, and each rebuild republishes every variable.
 	 */
 	scheduleDefinitionRefresh(): void {
-		if (this.#refreshTimer) return
-		this.#refreshTimer = setTimeout(() => {
-			this.#refreshTimer = null
-			this.rebuildDefinitions()
-		}, 250)
+		this.#refreshTimer.coalesce(250, () => this.rebuildDefinitions())
 	}
 
 	#publishFlowValues(registry: FlowRegistry): void {
@@ -170,22 +186,22 @@ export class ModuleInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 
 	// When module gets deleted
 	async destroy(): Promise<void> {
-		if (this.#refreshTimer) clearTimeout(this.#refreshTimer)
-		this.#refreshTimer = null
+		this.#refreshTimer.cancel()
+		// disconnect() awaits any in-flight discovery before returning, so the subsystems it fed are not
+		// cleared out from under it - clearing them first risks it repopulating state after the clear.
+		await this.connection.disconnect()
 		this.clocks.clear()
 		this.rtp.clear()
 		this.processors.clear()
 		this.issues.clear()
 		this.io.dispose()
 		this.variables.dispose()
-		await this.connection.disconnect()
 	}
 
 	async configUpdated(config: ModuleConfig, secrets: ModuleSecrets): Promise<void> {
-		if (this.#refreshTimer) clearTimeout(this.#refreshTimer)
-		this.#refreshTimer = null
-		this.io.dispose()
+		this.#refreshTimer.cancel()
 		await this.connection.disconnect()
+		this.io.dispose()
 		clearDeviceState(this)
 		this.config = config
 		this.secrets = secrets

@@ -35,6 +35,13 @@ export class IssueState {
 		return [...this.sources.values()].filter((s) => s.flags.length > 0)
 	}
 
+	/** Drop sources whose id starts with `prefix` and is no longer in `aliveIds`, e.g. after rediscovery. */
+	retire(prefix: string, aliveIds: Set<string>): void {
+		for (const id of this.sources.keys()) {
+			if (id.startsWith(prefix) && !aliveIds.has(id)) this.sources.delete(id)
+		}
+	}
+
 	clear(): void {
 		this.sources.clear()
 	}

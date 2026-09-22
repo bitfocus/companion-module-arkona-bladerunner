@@ -2,7 +2,7 @@ import type { CompanionVariableDefinition, DropdownChoice } from '@companion-mod
 import type * as VAPI from 'vapi'
 import type * as VScript from 'vscript'
 import type { ModuleInstance } from './main.js'
-import { watchKeyword } from './watch.js'
+import { watchAll, watchKeyword } from './watch.js'
 
 /** Clearing a time source is a real choice, distinct from "not configured yet". */
 export const NO_TIME_SOURCE = ''
@@ -120,88 +120,104 @@ export async function subscribeClocks(self: ModuleInstance, vm: VAPI.AT1130.Root
 	const batcher = self.variables
 	const state = self.clocks
 	const collect = (w: VScript.Watcher): void => self.connection.track(w)
+	// Independent round trips, registered concurrently - see watchAll.
+	const pending: Array<Promise<void>> = []
 
 	const ptp = vm.p_t_p_clock
-	await watchKeyword(
-		self,
-		'ptp.state',
-		ptp.state,
-		(v) => {
-			state.ptp.state = v
-			batcher.set('ptp_state', v ?? '')
-			batcher.set('ptp_locked', String(isPtpLocked(state.ptp)))
-			self.checkFeedbacks('ptp_locked')
-		},
-		collect,
+	pending.push(
+		watchKeyword(
+			self,
+			'ptp.state',
+			ptp.state,
+			(v) => {
+				state.ptp.state = v
+				batcher.set('ptp_state', v ?? '')
+				batcher.set('ptp_locked', String(isPtpLocked(state.ptp)))
+				self.checkFeedbacks('ptp_locked')
+			},
+			collect,
+		),
 	)
 
-	await watchKeyword(
-		self,
-		'ptp.mode',
-		ptp.mode,
-		(v) => {
-			state.ptp.mode = v
-			batcher.set('ptp_mode', v ?? '')
-		},
-		collect,
+	pending.push(
+		watchKeyword(
+			self,
+			'ptp.mode',
+			ptp.mode,
+			(v) => {
+				state.ptp.mode = v
+				batcher.set('ptp_mode', v ?? '')
+			},
+			collect,
+		),
 	)
 
-	await watchKeyword(
-		self,
-		'ptp.t_src',
-		ptp.t_src.status,
-		(v) => {
-			const path = v ? String(v.raw.kwl) : null
-			state.ptp.timeSourcePath = path
-			batcher.set('ptp_time_source', path ?? '')
-		},
-		collect,
+	pending.push(
+		watchKeyword(
+			self,
+			'ptp.t_src',
+			ptp.t_src.status,
+			(v) => {
+				const path = v ? String(v.raw.kwl) : null
+				state.ptp.timeSourcePath = path
+				batcher.set('ptp_time_source', path ?? '')
+			},
+			collect,
+		),
 	)
 
-	await watchKeyword(
-		self,
-		'ptp.clock_speed',
-		ptp.relative_clock_speed,
-		(v) => {
-			state.ptp.clockSpeedPpm = toPpm(v)
-			batcher.set('ptp_clock_speed_ppm', state.ptp.clockSpeedPpm ?? '')
-		},
-		collect,
+	pending.push(
+		watchKeyword(
+			self,
+			'ptp.clock_speed',
+			ptp.relative_clock_speed,
+			(v) => {
+				state.ptp.clockSpeedPpm = toPpm(v)
+				batcher.set('ptp_clock_speed_ppm', state.ptp.clockSpeedPpm ?? '')
+			},
+			collect,
+		),
 	)
 
-	await watchKeyword(
-		self,
-		'ptp.offset',
-		ptp.output.offset,
-		(v: any) => {
-			state.ptp.offsetNs = toNs(v?.value)
-			batcher.set('ptp_offset_ns', state.ptp.offsetNs ?? '')
-			self.checkFeedbacks('ptp_locked')
-		},
-		collect,
+	pending.push(
+		watchKeyword(
+			self,
+			'ptp.offset',
+			ptp.output.offset,
+			(v: any) => {
+				state.ptp.offsetNs = toNs(v?.value)
+				batcher.set('ptp_offset_ns', state.ptp.offsetNs ?? '')
+				self.checkFeedbacks('ptp_locked')
+			},
+			collect,
+		),
 	)
 
 	// Drift arrives as a bare rate rather than a Duration, unlike offset.
-	await watchKeyword(
-		self,
-		'ptp.drift',
-		ptp.output.drift,
-		(v: any) => {
-			state.ptp.driftPpm = toPpm(typeof v?.value === 'number' ? v.value : null)
-			batcher.set('ptp_drift_ppm', state.ptp.driftPpm ?? '')
-		},
-		collect,
+	pending.push(
+		watchKeyword(
+			self,
+			'ptp.drift',
+			ptp.output.drift,
+			(v: any) => {
+				state.ptp.driftPpm = toPpm(typeof v?.value === 'number' ? v.value : null)
+				batcher.set('ptp_drift_ppm', state.ptp.driftPpm ?? '')
+			},
+			collect,
+		),
 	)
 
-	await watchKeyword(
-		self,
-		'ptp.issues',
-		ptp.output.issues,
-		(v: any) => {
-			state.ptp.cycleDetected = v?.cycle_detected ?? null
-			batcher.set('ptp_cycle_detected', v?.cycle_detected === undefined ? '' : String(v.cycle_detected))
-		},
-		collect,
+	pending.push(
+		watchKeyword(
+			self,
+			'ptp.issues',
+			ptp.output.issues,
+			(v: any) => {
+				state.ptp.cycleDetected = v?.cycle_detected ?? null
+				batcher.set('ptp_cycle_detected', v?.cycle_detected === undefined ? '' : String(v.cycle_detected))
+			},
+			collect,
+		),
 	)
 
 	const genlocks = vm.genlock?.instances
@@ -210,64 +226,75 @@ export async function subscribeClocks(self: ModuleInstance, vm: VAPI.AT1130.Root
 		state.genlocks.set(g, { index: g, name: `Genlock #${g}`, timeSourcePath: null, offsetNs: null })
 		const entry = state.genlocks.get(g)!
 
-		await watchKeyword(
-			self,
-			`genlock[${g}].brief`,
-			instance.brief,
-			(v) => {
-				entry.name = v
-				batcher.set(`genlock_${g}_name`, v)
-			},
-			collect,
+		pending.push(
+			watchKeyword(
+				self,
+				`genlock[${g}].brief`,
+				instance.brief,
+				(v) => {
+					entry.name = v
+					batcher.set(`genlock_${g}_name`, v)
+				},
+				collect,
+			),
 		)
 
-		await watchKeyword(
-			self,
-			`genlock[${g}].t_src`,
-			instance.t_src.status,
-			(v) => {
-				const path = v ? String(v.raw.kwl) : null
-				entry.timeSourcePath = path
-				batcher.set(`genlock_${g}_time_source`, path ?? '')
-				batcher.set(`genlock_${g}_in_use`, String(path !== null))
-				self.checkFeedbacks('genlock_in_use')
-			},
-			collect,
+		pending.push(
+			watchKeyword(
+				self,
+				`genlock[${g}].t_src`,
+				instance.t_src.status,
+				(v) => {
+					const path = v ? String(v.raw.kwl) : null
+					entry.timeSourcePath = path
+					batcher.set(`genlock_${g}_time_source`, path ?? '')
+					batcher.set(`genlock_${g}_in_use`, String(path !== null))
+					self.checkFeedbacks('genlock_in_use')
+				},
+				collect,
+			),
 		)
 
-		await watchKeyword(
-			self,
-			`genlock[${g}].offset`,
-			instance.backend.output.offset,
-			(v: any) => {
-				entry.offsetNs = toNs(v?.value)
-				batcher.set(`genlock_${g}_offset_ns`, entry.offsetNs ?? '')
-			},
-			collect,
+		pending.push(
+			watchKeyword(
+				self,
+				`genlock[${g}].offset`,
+				instance.backend.output.offset,
+				(v: any) => {
+					entry.offsetNs = toNs(v?.value)
+					batcher.set(`genlock_${g}_offset_ns`, entry.offsetNs ?? '')
+				},
+				collect,
+			),
 		)
 	}
 
-	await watchKeyword(
-		self,
-		'system.identify',
-		vm.system.frontpanel_blink_blue,
-		(v) => {
-			self.identifyActive = v
-			batcher.set('identify', String(v))
-			self.checkFeedbacks('identify')
-		},
-		collect,
+	pending.push(
+		watchKeyword(
+			self,
+			'system.identify',
+			vm.system.frontpanel_blink_blue,
+			(v) => {
+				self.identifyActive = v
+				batcher.set('identify', String(v))
+				self.checkFeedbacks('identify')
+			},
+			collect,
+		),
 	)
 
-	await watchKeyword(
-		self,
-		'system.led_brightness',
-		vm.system.frontpanel_led_brightness,
-		(v) => {
-			batcher.set('led_brightness', v)
-		},
-		collect,
+	pending.push(
+		watchKeyword(
+			self,
+			'system.led_brightness',
+			vm.system.frontpanel_led_brightness,
+			(v) => {
+				batcher.set('led_brightness', v)
+			},
+			collect,
+		),
 	)
 
+	await watchAll(pending)
 	batcher.flush()
 }

@@ -580,20 +580,23 @@ export async function subscribeProcessors(self: ModuleInstance, vm: VAPI.AT1130.
 		discover('audio shufflers', async () => {
 			const shuffler = vm.audio_shuffler
 			if (!shuffler) return
-			for (const i of await shuffler.instances.allocated_indices()) {
-				const row = shuffler.instances.row(i)
+			const indices = await shuffler.instances.allocated_indices()
+			const rows = indices.map((i) => shuffler.instances.row(i))
+			// The array's own length is what says how many channels each shuffler has; inventing a count
+			// would invent destinations whose writes the device has nowhere to put. Independent round
+			// trips, so read every shuffler's channel count at once.
+			const currents = await Promise.all(rows.map(async (row) => row.a_src.status.read()))
+			indices.forEach((i, index) => {
+				const row = rows[index]
 				const node = `shuffler_${i}`
 				nameNode(node, `Audio Shuffler ${i}`, row)
-				// The array's own length is what says how many channels this shuffler has; inventing a
-				// count would invent destinations whose writes the device has nowhere to put.
-				const current = await row.a_src.status.read()
-				const channels = Array.isArray(current) ? current.length : 0
+				const channels = Array.isArray(currents[index]) ? currents[index].length : 0
 				if (channels === 0) self.log('warn', `Audio shuffler ${i} reports no channels; it cannot be routed`)
 				addShufflerInputs(node, 'audio', channels, row.a_src, (essence, channel) =>
 					(essence as VAPI.AT1130.Audio.Essence).channels.reference_to_index(channel),
 				)
 				addOutput(`${node}_out`, ' Out', node, 'audio', `audio_shuffler.instances[${i}].output`)
-			}
+			})
 		}),
 
 		// An audio mixer's channels are its destinations: each one is an independent reference, and the

@@ -2,6 +2,7 @@ import type { CompanionVariableDefinition, CompanionVariableValue } from '@compa
 import type * as VAPI from 'vapi'
 import type { ModuleInstance } from './main.js'
 import { watchIssues } from './issues.js'
+import { RestartableTimer } from './timers.js'
 import { watchAll, watchKeyword, type Watchable } from './watch.js'
 
 /**
@@ -51,7 +52,7 @@ export const ECC_MEMORIES = [
 export class VariableBatcher {
 	readonly #self: ModuleInstance
 	#pending: Record<string, CompanionVariableValue | undefined> = {}
-	#timer: NodeJS.Timeout | null = null
+	readonly #timer = new RestartableTimer()
 
 	constructor(self: ModuleInstance) {
 		this.#self = self
@@ -59,14 +60,11 @@ export class VariableBatcher {
 
 	set(variableId: string, value: CompanionVariableValue | undefined): void {
 		this.#pending[variableId] = value
-		this.#timer ??= setTimeout(() => this.flush(), 100)
+		this.#timer.coalesce(100, () => this.flush())
 	}
 
 	flush(): void {
-		if (this.#timer) {
-			clearTimeout(this.#timer)
-			this.#timer = null
-		}
+		this.#timer.cancel()
 		if (Object.keys(this.#pending).length === 0) return
 		const values = this.#pending
 		this.#pending = {}
@@ -74,10 +72,7 @@ export class VariableBatcher {
 	}
 
 	dispose(): void {
-		if (this.#timer) {
-			clearTimeout(this.#timer)
-			this.#timer = null
-		}
+		this.#timer.cancel()
 		this.#pending = {}
 	}
 }
