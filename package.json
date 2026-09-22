@@ -32,15 +32,15 @@
 	},
 	"devDependencies": {
 		"@companion-module/tools": "^2.8.0",
-		"@types/node": "^22.20.1",
+		"@types/node": "^22.20.4",
 		"@vitest/coverage-v8": "4.1.11",
 		"eslint": "^9.39.5",
 		"husky": "^9.1.7",
 		"lint-staged": "^16.4.0",
-		"prettier": "^3.9.6",
+		"prettier": "^3.9.8",
 		"rimraf": "^6.1.3",
 		"typescript": "~5.9.3",
-		"typescript-eslint": "^8.68.0",
+		"typescript-eslint": "^8.70.0",
 		"vitest": "^4.1.11"
 	},
 	"prettier": "@companion-module/tools/.prettierrc.json",
