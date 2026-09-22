@@ -50,7 +50,7 @@ export class ClockState {
 	 */
 	timeSourceChoices(): DropdownChoice[] {
 		return [
-			{ id: NO_TIME_SOURCE, label: '(none - clear the time source)' },
+			{ id: NO_TIME_SOURCE, label: 'None' },
 			{ id: PTP_CLOCK_OUTPUT, label: 'PTP Clock' },
 			...[...this.genlocks.values()].map((g) => ({ id: genlockOutputPath(g.index), label: g.name })),
 		]

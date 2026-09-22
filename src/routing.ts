@@ -404,12 +404,12 @@ export function isBreakaway(destination: FlowDestination | undefined): boolean {
 
 export function sourceChoices(registry: FlowRegistry): DropdownChoice[] {
 	return [
-		{ id: NO_SOURCE, label: '(none - clear the destination)' },
+		{ id: NO_SOURCE, label: 'None' },
 		...[...registry.sources.values()].map((s) => ({
 			id: s.id,
 			// Single-level sources are marked, so it is obvious why routing one on "Video + Audio"
 			// only moves half of it.
-			label: s.levels.length === 1 ? `${s.label} [${s.levels[0]} only]` : s.label,
+			label: s.levels.length === 1 ? `${s.label} [${s.levels[0] === 'video' ? 'Video' : 'Audio'} only]` : s.label,
 		})),
 	]
 }
@@ -445,7 +445,7 @@ export function sourceChannelOption(registry: FlowRegistry): CompanionInputField
 }
 
 export function destinationChoices(registry: FlowRegistry): DropdownChoice[] {
-	return [...registry.destinations.values()].map((d) => ({ id: d.id, label: `${d.label} (${d.id})` }))
+	return [...registry.destinations.values()].map((d) => ({ id: d.id, label: d.label }))
 }
 
 const LEVEL_LABEL: Record<FlowLevel, string> = { video: 'Video', audio: 'Audio' }
