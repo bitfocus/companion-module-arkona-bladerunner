@@ -660,7 +660,9 @@ describe('processors as flow endpoints', () => {
 			sourceChannel: 3,
 		})
 		const r = buildRegistry(flowState(chassis(), noRtp(), p))
-		expect(sourceChannelOption(r).isVisibleData?.channelDestinations).toEqual(['shuffler_0_in_0'])
+		expect(sourceChannelOption(r).isVisibleExpression).toBe(
+			`arrayIncludes(jsonparse('["shuffler_0_in_0"]'), $(options:destination))`,
+		)
 		expect(r.destinations.get('shuffler_0_in_0')?.active.audio.channel).toBe(3)
 		expect(r.destinations.get('delay_0_in_0')?.takesChannel).toBe(false)
 

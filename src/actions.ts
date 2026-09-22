@@ -127,7 +127,7 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 					min: 1,
 					max: 600000,
 					step: 1,
-					isVisible: (options) => options.style === 'fade',
+					isVisibleExpression: `$(options:style) == 'fade'`,
 				},
 			],
 			callback: async (event) => {
@@ -191,7 +191,7 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 					min: 0,
 					max: 100,
 					step: 0.1,
-					isVisible: (options) => options.operation === 'set',
+					isVisibleExpression: `$(options:operation) == 'set'`,
 				},
 				{
 					id: 'adjustment',
@@ -201,7 +201,7 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 					min: -100,
 					max: 100,
 					step: 0.1,
-					isVisible: (options) => options.operation === 'adjust',
+					isVisibleExpression: `$(options:operation) == 'adjust'`,
 				},
 				{
 					id: 'duration',
@@ -266,7 +266,7 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 					min: -0.07,
 					max: 1.07,
 					step: 0.001,
-					isVisible: (options) => options.operation === 'set',
+					isVisibleExpression: `$(options:operation) == 'set'`,
 				},
 				{
 					id: 'adjustment',
@@ -276,7 +276,7 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 					min: -1.14,
 					max: 1.14,
 					step: 0.001,
-					isVisible: (options) => options.operation === 'adjust',
+					isVisibleExpression: `$(options:operation) == 'adjust'`,
 				},
 			],
 			callback: async (event) => {
@@ -326,7 +326,7 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 					min: 0.001,
 					max: 1.131,
 					step: 0.001,
-					isVisible: (options) => options.operation === 'set',
+					isVisibleExpression: `$(options:operation) == 'set'`,
 				},
 				{
 					id: 'adjustment',
@@ -336,7 +336,7 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 					min: -1.13,
 					max: 1.13,
 					step: 0.001,
-					isVisible: (options) => options.operation === 'adjust',
+					isVisibleExpression: `$(options:operation) == 'adjust'`,
 				},
 			],
 			callback: async (event) => {
@@ -386,7 +386,7 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 					min: 0,
 					max: 100,
 					step: 0.1,
-					isVisible: (options) => options.operation === 'set',
+					isVisibleExpression: `$(options:operation) == 'set'`,
 				},
 				{
 					id: 'adjustment',
@@ -396,7 +396,7 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 					min: -100,
 					max: 100,
 					step: 0.1,
-					isVisible: (options) => options.operation === 'adjust',
+					isVisibleExpression: `$(options:operation) == 'adjust'`,
 				},
 				{
 					id: 'duration',

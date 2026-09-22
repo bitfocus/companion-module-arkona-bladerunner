@@ -415,11 +415,20 @@ export function sourceChoices(registry: FlowRegistry): DropdownChoice[] {
 }
 
 /**
+ * Quote a string as a single-quoted literal for embedding in a Companion expression. The backslash
+ * must be escaped before the quote, or an escape the lexer consumes would corrupt the payload.
+ */
+function expressionString(value: string): string {
+	return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
+}
+
+/**
  * The "which channel of the source" field, shared by the route action and its feedback so the two
  * cannot disagree about when it applies.
  *
  * It is shown only for the destinations that are fed one channel at a time - an audio shuffler
- * input - which is a property of the registry, hence `isVisibleData` rather than an expression.
+ * input - which is a property of the registry, so the set is baked into the expression at
+ * definition time. `isVisibleExpression` has no equivalent of `isVisibleData`.
  */
 export function sourceChannelOption(registry: FlowRegistry): CompanionInputFieldNumber {
 	const channelDestinations = [...registry.destinations.values()].filter((d) => d.takesChannel).map((d) => d.id)
@@ -431,8 +440,7 @@ export function sourceChannelOption(registry: FlowRegistry): CompanionInputField
 		default: 0,
 		min: 0,
 		max: 255,
-		isVisible: (options, data) => (data.channelDestinations as string[]).includes(String(options.destination)),
-		isVisibleData: { channelDestinations },
+		isVisibleExpression: `arrayIncludes(jsonparse(${expressionString(JSON.stringify(channelDestinations))}), $(options:destination))`,
 	}
 }
 

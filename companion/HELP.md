@@ -13,6 +13,5 @@ Monitor and control Arkona Technologies BLADE//runner frames.
 3. Leave **Port** at `80` and **Protocol** at `ws (http)` unless the Blade is served over HTTPS — then use `wss` and the HTTPS port.
 4. Set a **Reservation Marker**. The Blade only accepts control commands from a session that holds one. The default is `Bitfocus-Connection`. If another session (the Blade web UI or another connection) already holds a marker, use that same value to work alongside it, or clear it on the device.
 5. Fill in **Username** and **Password** only if the Blade is password-protected.
-6. Save. The instance connects and discovers I/O, clocks, processors, and routing from the frame.
 
 Monitoring variables work without a reservation marker. Routing, BNC direction, identify, reboot, and time-source changes require one. If an action is blocked, match this connection's Reservation Marker to the value shown on the Blade.
