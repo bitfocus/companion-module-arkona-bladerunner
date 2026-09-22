@@ -26,8 +26,8 @@
 	},
 	"dependencies": {
 		"@companion-module/base": "~1.14.1",
-		"vapi": "file:./vendor/vapi",
-		"vscript": "file:./vendor/vscript",
+		"vapi": "https://sdk.arkona-technologies.de/vapi@2.6.45/node/vapi.tar.gz",
+		"vscript": "https://sdk.arkona-technologies.de/vscript@2.6.8/node/vscript.tar.gz",
 		"ws": "^8.21.3"
 	},
 	"devDependencies": {

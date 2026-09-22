@@ -1045,9 +1045,9 @@ __metadata:
     rimraf: "npm:^6.1.3"
     typescript: "npm:~5.9.3"
     typescript-eslint: "npm:^8.70.0"
-    vapi: "file:./vendor/vapi"
+    vapi: "https://sdk.arkona-technologies.de/vapi@2.6.45/node/vapi.tar.gz"
     vitest: "npm:^4.1.11"
-    vscript: "file:./vendor/vscript"
+    vscript: "https://sdk.arkona-technologies.de/vscript@2.6.8/node/vscript.tar.gz"
     ws: "npm:^8.21.3"
   languageName: unknown
   linkType: soft
@@ -1138,6 +1138,16 @@ __metadata:
   version: 1.1.2
   resolution: "buffer-from@npm:1.1.2"
   checksum: 10c0/124fff9d66d691a86d3b062eff4663fe437a9d9ee4b47b1b9e97f5a5d14f6d5399345db80f796827be7c95e70a8e765dd404b7c3ff3b3324f98e9b0c8826cc34
+  languageName: node
+  linkType: hard
+
+"bufferutil@npm:^4.0.8":
+  version: 4.1.0
+  resolution: "bufferutil@npm:4.1.0"
+  dependencies:
+    node-gyp: "npm:latest"
+    node-gyp-build: "npm:^4.3.0"
+  checksum: 10c0/12d63bbc80a3b6525bc62a28387fca0a5aed09e41b74375c500e60721b6a1ab2960b82e48f1773eddea2b14e490f129214b8b57bd6e1a5078b6235857d658508
   languageName: node
   linkType: hard
 
@@ -2472,6 +2482,17 @@ __metadata:
   languageName: node
   linkType: hard
 
+"node-gyp-build@npm:^4.3.0":
+  version: 4.8.4
+  resolution: "node-gyp-build@npm:4.8.4"
+  bin:
+    node-gyp-build: bin.js
+    node-gyp-build-optional: optional.js
+    node-gyp-build-test: build-test.js
+  checksum: 10c0/444e189907ece2081fe60e75368784f7782cfddb554b60123743dfb89509df89f1f29c03bbfa16b3a3e0be3f48799a4783f487da6203245fa5bed239ba7407e1
+  languageName: node
+  linkType: hard
+
 "node-gyp@npm:latest":
   version: 13.0.2
   resolution: "node-gyp@npm:13.0.2"
@@ -3345,12 +3366,22 @@ __metadata:
   languageName: node
   linkType: hard
 
-"vapi@file:./vendor/vapi::locator=arkona-bladerunner%40workspace%3A.":
+"utf-8-validate@npm:^6.0.3":
+  version: 6.0.6
+  resolution: "utf-8-validate@npm:6.0.6"
+  dependencies:
+    node-gyp: "npm:latest"
+    node-gyp-build: "npm:^4.3.0"
+  checksum: 10c0/88c3581c43b9f824f0939b0da0ecf0cf092ff944ace7be517a5459bc18fe1884fc4acda3502ed369b4ce44baf40590a8f1e820c43a425df0758f2ba76b055f77
+  languageName: node
+  linkType: hard
+
+"vapi@https://sdk.arkona-technologies.de/vapi@2.6.45/node/vapi.tar.gz":
   version: 2.6.45
-  resolution: "vapi@file:./vendor/vapi#./vendor/vapi::hash=5214cf&locator=arkona-bladerunner%40workspace%3A."
+  resolution: "vapi@https://sdk.arkona-technologies.de/vapi@2.6.45/node/vapi.tar.gz"
   peerDependencies:
     vscript: ^2.6.8
-  checksum: 10c0/f2b87d5c7d52e5ec4abe0076039600a9790c8819c48691739daa88f43390afd21de8e93ed2fa5e6d81ca29b113b8dc3f11eb46e079cb956e3e346c8f208c9d3c
+  checksum: 10c0/4789e86aec0e10c4bf07e4d1ab93b75f2cedd5af39efa6ca038a9451e5d1f9f363fb06dfd8412ef9543f881e1acfa33a00de96865813211082dc6f12d4f8311b
   languageName: node
   linkType: hard
 
@@ -3479,12 +3510,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"vscript@file:./vendor/vscript::locator=arkona-bladerunner%40workspace%3A.":
+"vscript@https://sdk.arkona-technologies.de/vscript@2.6.8/node/vscript.tar.gz":
   version: 2.6.8
-  resolution: "vscript@file:./vendor/vscript#./vendor/vscript::hash=c459e1&locator=arkona-bladerunner%40workspace%3A."
+  resolution: "vscript@https://sdk.arkona-technologies.de/vscript@2.6.8/node/vscript.tar.gz"
   dependencies:
+    bufferutil: "npm:^4.0.8"
+    utf-8-validate: "npm:^6.0.3"
     ws: "npm:^8.14.2"
-  checksum: 10c0/e3ced72ba426c3dcf316d81940fc6df9ce19c07e67fc63435ba41ae5f9683575ac0dfa69da03cc0ac28a15644d316bef1d0e889b86c352a4f247a111bebf154b
+  checksum: 10c0/ab58f6d5005eaa4521eec4c8c654bf34bccc408c81f9f4cf6cd84fbc36d937660c64c77eec9521b5ec1c58494337816898d75ef21c69d1a31608a34c62edf334
   languageName: node
   linkType: hard
 
