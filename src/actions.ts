@@ -578,7 +578,7 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 
 				const what = clearing ? `Cleared ${destinationKey}` : `Routed ${sourceKey} to ${destinationKey}`
 				if (failed.length === 0) {
-					self.log('info', `${what} (${succeeded.join(' + ')})`)
+					self.log('debug', `${what} (${succeeded.join(' + ')})`)
 				} else if (succeeded.length === 0) {
 					self.log('error', `Failed to route ${sourceKey} to ${destinationKey} - ${failed.join('; ')}`)
 				} else {
@@ -669,7 +669,7 @@ export function UpdateActions(self: ModuleInstance, registry: FlowRegistry): voi
 				try {
 					await vm.i_o_module.output.row(index).sdi.t_src.command.write(source)
 					self.log(
-						'info',
+						'debug',
 						source ? `SDI output ${index} time source set to ${path}` : `Cleared SDI output ${index} time source`,
 					)
 				} catch (e: any) {
